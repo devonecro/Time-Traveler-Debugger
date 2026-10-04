@@ -44,35 +44,72 @@ class Stack
 
 public:
     // Implement these functions:
-    Stack()
-    { // initialize the stack
-    }
+    Stack():top(nullptr),count(0)
+    {}
     void push(const T &val)
     {
+        if(count >= MAX_STACK_DEPTH)
+        {
+            throw std:overflow_error("Stack size exceeded!");
+        }
+        Node * newNode = new Node;
+        newNode->data = val;
+        newNode->next = top;
 
+        top = newNode;
+        count++;
         // pushes the value on the stack if max limit is not reached yet.
     }
     T pop()
     {
+        if(isEmpty())
+        {
+            throw std::underflow_error("Stack is empty!");
+        }
+        Node * temp = top;
+        top = top->next;
+        delete temp; // deallocating memory
         // pop the top value on the stack
+        count--;
+        return top;
     }
     T &peek()
     {
+        if(isEmpty())
+        {
+            return top->value;
+        }
+        throw std::underflow_error("Tried to peek an empty Stack!");
         // returns the top value on the stack
     }
     bool isEmpty()
     {
+        if(count == 0)
+        {
+            return true;
+        }
+        return false;
     }
     int32_t depth()
     {
+        return count;
     }
     int32_t snapshot_into(T out[], int32_t maxLen)
     {
+        Node * temp = top;
+        int32_t index = 0;
+        while(temp!=nullptr)
+        {
+            out[index] = temp->data;
+
+            index++;
+            temp->next;
+        }
+        return index;
         // copies every frame, top to bottom in the array given as a parameter
         // this is what buildSnapshot() call, returns count written
     }
 };
-
 
 // Timeline : doubly linked list of Snapshots
 struct Snapshot; // fwd declaration;
