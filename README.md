@@ -8,3 +8,6 @@ Completed implementation of Stack according to the constraints.
 Implemented doubly linked list for timeline class.
 
 
+## Wednesday 7 October 11:59 AM
+
+Implemented Line read, First Word extraction & second word extraction for the source.bin file.

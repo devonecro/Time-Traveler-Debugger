@@ -208,19 +208,75 @@ struct PendingPatch
     string targetFuncName;
 };
 
-
-
 // PASS 0x0: READING source.bin + VALIDITY CHECK
 bool readSourceLine(ifstream &in, string &out)
 {
+    while(getline(in,out))
+    {
+        bool blank = true;
+
+        for(char c : out)
+        {
+            if(c != ' ' && c != '\t' && c!= '\r')
+            {
+                blank = false;
+                break;
+            }
+        }
+        if(!blank)
+        {
+            return true;
+        }
+        return false;
+    }
     // reads the next nonblank line
 }
 string firstWord(const string &line)
 {
+    string word_  = "";
+    int i = 0;
+
+    while(i < line.length() and (line[i] == ' ' or line[i] == '\t'))
+    {
+        i++;
+    }
+
+    while(i < line.length() and line[i] != ' ' and line[i] != '\t' and line[i] !='\r')
+    {
+        word_ += line[i];
+        i++;
+    }
+
+    return word_;
     // returns first word from the input string
 }
 string secondWord(const string &line)
 {
+    string word_  = "";
+    int i = 0;
+
+    while(i < line.length() and (line[i] == ' ' or line[i] == '\t'))
+    {
+        i++;
+    }
+
+    while(i < line.length() and line[i] != ' ' and line[i] != '\t' and line[i] !='\r')
+    {
+        i++; // skipping the first word
+    }
+
+    while(i < line.length() and (line[i] == ' ' or line[i] == '\t'))
+    {
+        i++; // skipping spaces before second word
+    }
+
+    while(i < line.length() and line[i] != ' ' and line[i] != '\t' and line[i] !='\r')
+    {
+        word_ += line[i];
+        i++; // skipping the first word
+    }
+    return word_;
+
     // returns the second word
 }
 bool validateProgram(const char *sourcePath)
