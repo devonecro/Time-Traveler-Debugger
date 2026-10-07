@@ -14,3 +14,11 @@ Implemented Line read, First Word extraction & second word extraction for the so
 
 ## Wednesday 7 October 12:44 PM
 Added validation
+
+## Wednesday 7 October 3:05 PM
+Implemented Reading from resolve file, Writing to Resolve file & resolving file.
+In Resolve Function we repeatedly called writing to resolve file and then we implemented added calls to Patch struct array
+Later, we nested loops to fix the patches ( if they exist , file is not broken in case of broken it returns -1 as offset)
+Patches were replaced with the actual byteoffset location of the functions that were called (This was checked from the function array and the struct it held comparing it's byteoffset and funcname values for validation)
+
+

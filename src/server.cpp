@@ -321,11 +321,33 @@ bool validateProgram(const char *sourcePath)
 // PASS 0x1: RESOLVE() -> resolve.bin
 int64_t writeResolveRecord(FILE *f, int64_t offsetField, const string &text)
 {
+    int32_t stringSize = text.size();
+
+    fwrite(&offsetField,sizeof(int64_t),1,f);
+    fwrite(&stringSize,sizeof(int32_t),1,f); // format of fwrite(memory_addres_location_of_value_to_store,size,no of items,file)
+    fwrite(text.c_str(),sizeof(char),stringSize,f);
+
+    return offsetField; // returns starting point
     // writes one [offset(8B)][size(4B)][string] record at the current file position
     // returns this record's own starting byte position
 }
 int64_t readResolveRecord(FILE *f, string &outText)
 {
+    int64_t offsetField;
+    int32_t stringSize;
+
+    if(fread(&offsetField,sizeof(int64_t),1,f)!=1)
+        return -1;
+
+    if(fread(&stringSize,sizeof(int32_t),1,f)!= 1) // checks if it returned 1 item if so then ok otherwise offset is negative resolve.bin is corrupted
+        return -1;
+    
+    outText.resize(stringSize);
+
+    if(fread(&outText[0],sizeof(char),stringSize,f)!= stringSize)
+        return -1;
+
+    return offsetField;
     // reads one record at the current position and advances past it, returns the offset field - the raw line text comes back untouched in outText.
 }
 int64_t resolveProgram(const char *sourcePath, const char *resolveBinPath)
@@ -342,6 +364,82 @@ int64_t resolveProgram(const char *sourcePath, const char *resolveBinPath)
     // with its target's position. Patching happens after the full write
     // Returns the byte offset of main's FUNC header record.
     // if there is no main return the error 
+
+
+    ifstream source(sourcePath,ios::binary); // code starts here
+
+    if(!source.is_open())
+    {
+        return -1;
+    }
+
+    FILE * resolveFile = fopen(resolveBinPath,"w+b"); // write in binary
+
+    if(resolveFile == nullptr)
+    {
+        return -1;
+    }
+
+    string line;
+
+    while(readSourceLine(source,line))
+    {
+        int64_t currentPosition = ftell(resolveFile); // gets current location of file at start == 0
+
+        writeResolveRecord(resolveFile,currentPosition,line);
+
+        string first_word = firstWord(line);
+
+        if(first_word == "func")
+        {
+            if(funcCount >= MAX_FUNCS)
+            {
+                fclose(resolveFile);
+                return -1; // we had more functions here
+            }
+
+            funcArray[funcCount].funcName = secondWord(line); // extract the name of function and store
+            funcArray[funcCount].byteOffsetInResolveBin = currentPosition; 
+            funcCount++;
+        }
+        else if(first_word == "call")
+        {
+            if(patchCount >= MAX_PATCHES)
+            {
+                fclose(resolveFile);
+                return -1;
+            }
+
+            patches[patchCount].byteOffsetOfOffsetField = currentPosition; // this tells we have to cocme back to this offset to replace the location when the function is found
+            patches[patchCount].targetFuncName = secondWord(line);
+
+            patchCount++; // if we have a function to be called we will put it inside the patch struct with it's values
+        }
+
+        for(int i = 0; i<patchCount; i++)
+        {
+            int64_t targetOffset = -1;
+
+            for(int j = 0; j<funcCount; j++)
+            {
+                if(patches[i].targetFuncName == funcArray[j].funcName)
+                {
+                    targetOffset = funcArray[j].byteOffsetInResolveBin;
+                    break;
+                }
+            }
+
+            if(targetOffset == -1)
+            {
+                fclose(resolveFile);
+                return -1;
+            }
+
+            fseek(resolveFile,patches[i].byteOffsetOfOffsetField,SEEK_SET); // seekset starts from the start of the file and reaches the defined byteoffset making it to the location where we need to patch
+
+            fwrite(&targetOffset,sizeof(int64_t),1,resolveFile); // writing the actual offset
+        }
+    }
 }
 
 // PASS 0x2: EXECUTION (tokenization happens here)
