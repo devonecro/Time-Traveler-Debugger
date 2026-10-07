@@ -21,4 +21,13 @@ In Resolve Function we repeatedly called writing to resolve file and then we imp
 Later, we nested loops to fix the patches ( if they exist , file is not broken in case of broken it returns -1 as offset)
 Patches were replaced with the actual byteoffset location of the functions that were called (This was checked from the function array and the struct it held comparing it's byteoffset and funcname values for validation)
 
+## Wed, 7 October 3:53 PM
+Implemented Tokenization where we tokeneized a line into three parts
+
+| Keyword | Identifier | Param
+
+
+
+
+
 

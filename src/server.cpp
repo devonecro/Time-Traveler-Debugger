@@ -428,7 +428,6 @@ int64_t resolveProgram(const char *sourcePath, const char *resolveBinPath)
                     break;
                 }
             }
-
             if(targetOffset == -1)
             {
                 fclose(resolveFile);
@@ -456,6 +455,50 @@ struct Token
 };
 int32_t tokenizeLine(const string &line, Token tokens[], int32_t maxTokens)
 {
+    int32_t tokenCount = 0;
+    int i = 0;
+
+    while(i < line.length() and tokenCount < maxTokens)
+    {
+
+        while(i < line.length() and line[i] != 'r' and line[i] != '\t' and line[i] != ' ')
+        {
+            i++;
+        }
+
+        if(i >=line.length())
+        {
+            break; // if we go past the line we will break the line and move to next line
+        }
+
+        // upto this point we have successfully moved past the trailing spaces
+        string word = ""; // word initilization
+
+        while(i <line.length() and line[i] != '\r' and line[i] != '\t' and line[i] != ' ')
+        {
+            word += line[i];
+            i++;
+        }
+
+        tokens[tokenCount].text = word;
+
+        if(tokenCount == 0)
+        {
+            tokens[tokenCount].type = KEYWORD;
+        }
+        else if(tokenCount == 1)
+        {
+            tokens[tokenCount].type = IDENTIFIER;
+        }
+        else if(tokenCount == 2)
+        {
+            tokens[tokenCount].type = PARAM;
+        }
+
+        tokenCount++;
+    }
+
+    return tokenCount;
     // first word is always a instruction keyword
     // instruction set = [func, func_end, call, set, add, sub, mul and div]
     // next word is identifier like name of a function, variable name
@@ -463,6 +506,7 @@ int32_t tokenizeLine(const string &line, Token tokens[], int32_t maxTokens)
 }
 Snapshot *buildSnapshot(Stack<Frame> &callStack)
 {
+    
     // build the snapshot based on the callStack given
 }
 void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &timeline)
