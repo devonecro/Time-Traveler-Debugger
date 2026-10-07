@@ -55,7 +55,6 @@ public:
         Node * newNode = new Node;
         newNode->data = val;
         newNode->next = top;
-
         top = newNode;
         count++;
         // pushes the value on the stack if max limit is not reached yet.
@@ -128,16 +127,37 @@ public:
     // Implement these functions
     Timeline()
     {
+        head = nullptr;
+        tail = nullptr;
+        stepCount = 0;
     }
     void record(Snapshot *s)
     {
+        TimelineNode * newNode = new TimelineNode;
+        newNode->data = s;
+        newNode->next = nullptr;
+
+        if(head == nullptr)
+        {
+            newNode->prev = nullptr;
+            head = tail = newNode;
+        }
+        else{
+            newNode->prev = tail;
+            tail->next = newNode;
+            tail = newNode;
+        }
+
+        stepCount++;
         // add record in the timeline
     }
     TimelineNode *begin()
     {
+        return head;
     }
     int32_t getStepCount()
     {
+        return stepCount;
     }
 };
 
