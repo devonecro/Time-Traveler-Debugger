@@ -97,12 +97,12 @@ public:
     {
         Node * temp = top;
         int32_t index = 0;
-        while(temp!=nullptr)
+        while(temp!=nullptr and index < maxLen)
         {
             out[index] = temp->data;
 
             index++;
-            temp->next;
+            temp = temp->next;
         }
         return index;
         // copies every frame, top to bottom in the array given as a parameter
@@ -466,9 +466,9 @@ int32_t tokenizeLine(const string &line, Token tokens[], int32_t maxTokens)
             i++;
         }
 
-        if(i >=line.length())
+        if(i >=line.length()) 
         {
-            break; // if we go past the line we will break the line and move to next line
+            break; // if we go past the line we will break the main while and return tokens = 0 , indicates issues with line
         }
 
         // upto this point we have successfully moved past the trailing spaces
@@ -506,7 +506,7 @@ int32_t tokenizeLine(const string &line, Token tokens[], int32_t maxTokens)
 }
 Snapshot *buildSnapshot(Stack<Frame> &callStack)
 {
-    
+
     // build the snapshot based on the callStack given
 }
 void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &timeline)
