@@ -11,3 +11,6 @@ Implemented doubly linked list for timeline class.
 ## Wednesday 7 October 11:59 AM
 
 Implemented Line read, First Word extraction & second word extraction for the source.bin file.
+
+## Wednesday 7 October 12:44 PM
+Added validation

@@ -220,15 +220,15 @@ bool readSourceLine(ifstream &in, string &out)
             if(c != ' ' && c != '\t' && c!= '\r')
             {
                 blank = false;
-                break;
+                break; // skips blank lines and moves forward
             }
         }
         if(!blank)
         {
             return true;
         }
-        return false;
     }
+    return false;
     // reads the next nonblank line
 }
 string firstWord(const string &line)
@@ -281,6 +281,40 @@ string secondWord(const string &line)
 }
 bool validateProgram(const char *sourcePath)
 {
+    ifstream in(sourcePath,ios::binary);
+
+    if(!in.is_open())
+    {
+        return false;
+    }
+    string line;
+    bool isinsideFunction = false;
+
+    while(readSourceLine(in,line))
+    {
+        string keyword = firstWord(line);
+
+        if(keyword == "func")
+        {
+            if(isinsideFunction)
+            {
+                return false;
+            }
+            isinsideFunction = true;
+        }
+        else if(keyword == "func_end")
+        {
+            if(!isinsideFunction)
+            {
+                return false;
+            }
+        }
+    }
+    if(isinsideFunction)
+    {
+        return false;
+    }
+    return true;
     // for each func defined there should be exactly one func_end and no nested funcs allowed - 
 }
 
