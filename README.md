@@ -35,18 +35,13 @@ Added fixes to snapshot into, fixed temp = temp->next from temp-next and added c
 Added some fixes from previous classes, fixed peek of Stack.
 Implemented Execute function that deals with the following:
 
+### Execute() Implementation
 Implemented the executeProgram() function to run instructions from resolve.bin, starting from main.
-
 Added support for set, add, sub, mul, and div.
-
 Used a stack to manage function calls and returns.
-
 Added argument passing and write-back so changes inside a function are reflected in the caller.
-
 Used separate arrays to track arguments without changing the existing structs.
-
 Added snapshots after each executed instruction to keep track of program state.
-
 The execution logic is implemented, but testing and error handling is still pending.
 
 
