@@ -83,7 +83,8 @@ Completed linux testing 5:15 PM Friday
 
 #### Windows Testing 
 
-Not Yet
+Windows Testing Completed through vsstudio using VISUAL STUDIO 2022 compiler.
+Replaced every and with && and every or with ||. In token added keyword enum.
 
 
 
