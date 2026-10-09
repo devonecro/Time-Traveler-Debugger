@@ -50,7 +50,7 @@ public:
     {
         if(count >= MAX_STACK_DEPTH)
         {
-            throw std:overflow_error("Stack size exceeded!");
+            throw std::overflow_error("Stack size exceeded!");
         }
         Node * newNode = new Node;
         newNode->data = val;
@@ -1006,7 +1006,7 @@ header.indexOffset = position;
         fclose(file);
         return;
     }
-    
+
     writeHeader(file, header);
 
     // Cleanup
@@ -1018,24 +1018,62 @@ header.indexOffset = position;
     // after timeline add the index array i the file
     // update the header
 }
+
+void printTimeline(Timeline &timeline)
+{
+    TimelineNode* current = timeline.begin();
+    int step = 1;
+
+    while (current != nullptr)
+    {
+        Snapshot* s = current->data;
+
+        cout << "\nStep " << step++ << endl;
+        cout << "Stack depth: " << s->stackDepth << endl;
+
+        for (int i = 0; i < s->stackDepth; i++)
+        {
+            Frame &f = s->callStack[i];
+
+            cout << "Function: " << f.func_name << endl;
+
+            for (int j = 0; j < f.argc; j++)
+            {
+                cout << "  Arg: " << f.argv[j].name
+                     << " = " << f.argv[j].value << endl;
+            }
+
+            for (int j = 0; j < f.localCount; j++)
+            {
+                cout << "  Local: " << f.locals[j].name
+                     << " = " << f.locals[j].value << endl;
+            }
+        }
+
+        current = current->next;
+    }
+}
 // main section
 int32_t main()
 {
     if (!validateProgram("source.bin"))
     {
-        // send an error response instead of a .tdbg file
+       cout << "Error: Invalid program structure\n";
         return 1;
     }
 
     int64_t mainOffset = resolveProgram("source.bin", "resolve.bin");
     if (mainOffset == -1)
     {
+        cout << "Error: Main function missing or invalid function call\n";
         return 1;
     }
 
     Timeline timeline;
     executeProgram("resolve.bin", mainOffset, timeline);
 
+
+    printTimeline(timeline); // this was testing
     writeTdbg(timeline, "session.tdbg");
 
     return 0;

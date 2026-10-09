@@ -44,6 +44,46 @@ Used separate arrays to track arguments without changing the existing structs.
 Added snapshots after each executed instruction to keep track of program state.
 The execution logic is implemented, but testing and error handling is still pending.
 
+## Friday, 8 October 3:50 PM
+
+Implemented Pass 0x3 Serialization
+
+Here, we take all the snapshots in our timeline and write them into a binary file called seeesion.tbdg
+
+Following helpers were implemented:
+
+WriteHeader() writes magic byes, version, total steps, and index position of file
+
+WriteString() writes the length of string first followed by it's actual characters
+
+WriteVariables() writes variable names and it's values
+
+WriteFrame() writes a function name, arguments, return position and local variables
+
+WriteSnapshots() write the stackdepth and all the frames stores in the snapshot
+
+## Main Function
+Write TDBG()
+
+
+We open the file and write temporary header with indexofffset = 0 because we dunno the index offset yet
+
+then we move in timeline write each snapshot and store it's starting byte position using ftell()
+
+After all snapshots are written we add the index at the end of the file. We use fseek() to go back and update the header with actual index position.
+
+This helps us access every snapshot directly without reading all the previous ones.
+
+
+### Testing Phase
+
+#### Linux Testing
+
+Completed linux testing 5:15 PM Friday
+
+#### Windows Testing 
+
+Not Yet
 
 
 
