@@ -107,7 +107,7 @@ public:
     {
         Node * temp = top;
         int32_t index = 0;
-        while(temp!=nullptr and index < maxLen)
+        while(temp!=nullptr && index < maxLen)
         {
             out[index] = temp->data;
 
@@ -215,7 +215,7 @@ struct FuncEntry
 };
 struct PendingPatch
 {
-    int64_t byteOffsetOfOffsetField; // where in resolve.bin to seek back and overwrite
+    int64_t byteOffsetOfOffsetField; // where in resolve.bin to seek back && overwrite
     string targetFuncName;
 };
 
@@ -231,7 +231,7 @@ bool readSourceLine(ifstream &in, string &out)
             if(c != ' ' && c != '\t' && c!= '\r')
             {
                 blank = false;
-                break; // skips blank lines and moves forward
+                break; // skips blank lines && moves forward
             }
         }
         if(!blank)
@@ -247,12 +247,12 @@ string firstWord(const string &line)
     string word_  = "";
     int i = 0;
 
-    while(i < line.length() and (line[i] == ' ' or line[i] == '\t'))
+    while(i < line.length() && (line[i] == ' ' || line[i] == '\t'))
     {
         i++;
     }
 
-    while(i < line.length() and line[i] != ' ' and line[i] != '\t' and line[i] !='\r')
+    while(i < line.length() && line[i] != ' ' && line[i] != '\t' && line[i] !='\r')
     {
         word_ += line[i];
         i++;
@@ -266,22 +266,22 @@ string secondWord(const string &line)
     string word_  = "";
     int i = 0;
 
-    while(i < line.length() and (line[i] == ' ' or line[i] == '\t'))
+    while(i < line.length() && (line[i] == ' ' || line[i] == '\t'))
     {
         i++;
     }
 
-    while(i < line.length() and line[i] != ' ' and line[i] != '\t' and line[i] !='\r')
+    while(i < line.length() && line[i] != ' ' && line[i] != '\t' && line[i] !='\r')
     {
         i++; // skipping the first word
     }
 
-    while(i < line.length() and (line[i] == ' ' or line[i] == '\t'))
+    while(i < line.length() && (line[i] == ' ' || line[i] == '\t'))
     {
         i++; // skipping spaces before second word
     }
 
-    while(i < line.length() and line[i] != ' ' and line[i] != '\t' and line[i] !='\r')
+    while(i < line.length() && line[i] != ' ' && line[i] != '\t' && line[i] !='\r')
     {
         word_ += line[i];
         i++; // skipping the first word
@@ -327,7 +327,7 @@ bool validateProgram(const char *sourcePath)
         return false;
     }
     return true;
-    // for each func defined there should be exactly one func_end and no nested funcs allowed - 
+    // for each func defined there should be exactly one func_end && no nested funcs allowed - 
 }
 
 // PASS 0x1: RESOLVE() -> resolve.bin
@@ -368,7 +368,7 @@ int64_t readResolveRecord(FILE *f, string &outText)
     }
 
     return offsetField;
-    // reads one record at the current position and advances past it, returns the offset field - the raw line text comes back untouched in outText.
+    // reads one record at the current position && advances past it, returns the offset field - the raw line text comes back untouched in outText.
 }
 int64_t resolveProgram(const char *sourcePath, const char *resolveBinPath)
 {
@@ -378,8 +378,8 @@ int64_t resolveProgram(const char *sourcePath, const char *resolveBinPath)
     int32_t patchCount = 0;
     // Every source line becomes one record holding the raw line, as-is.
     // resolve() only PEEKS at the leading word(s) -- enough to spot FUNC
-    // (remember its position) and CALL (remember which function it needs
-    // and where its offset field sits).
+    // (remember its position) && CALL (remember which function it needs
+    // && where its offset field sits).
     // Once the whole file is written, every CALL's offset field is patched
     // with its target's position. Patching happens after the full write
     // Returns the byte offset of main's FUNC header record.
@@ -418,7 +418,7 @@ int64_t resolveProgram(const char *sourcePath, const char *resolveBinPath)
                 return -1; // we had more functions here
             }
 
-            funcArray[funcCount].funcName = secondWord(line); // extract the name of function and store
+            funcArray[funcCount].funcName = secondWord(line); // extract the name of function && store
             funcArray[funcCount].byteOffsetInResolveBin = currentPosition; 
             funcCount++;
         }
@@ -455,7 +455,7 @@ int64_t resolveProgram(const char *sourcePath, const char *resolveBinPath)
             return -1;
         }
 
-        fseek(resolveFile,patches[i].byteOffsetOfOffsetField,SEEK_SET); // seekset starts from the start of the file and reaches the defined byteoffset making it to the location where we need to patch
+        fseek(resolveFile,patches[i].byteOffsetOfOffsetField,SEEK_SET); // seekset starts from the start of the file && reaches the defined byteoffset making it to the location where we need to patch
 
         fwrite(&targetOffset,sizeof(int64_t),1,resolveFile); // writing the actual offset
     }
@@ -485,7 +485,7 @@ enum TokenType
 };
 struct Token
 {
-    TokenType type;
+    enum TokenType type;
     string text;
 };
 int32_t tokenizeLine(const string &line, Token tokens[], int32_t maxTokens)
@@ -493,23 +493,23 @@ int32_t tokenizeLine(const string &line, Token tokens[], int32_t maxTokens)
     int32_t tokenCount = 0;
     int i = 0;
 
-    while(i < line.length() and tokenCount < maxTokens)
+    while(i < line.length() && tokenCount < maxTokens)
     {
 
-        while(i < line.length() and (line[i] == '\r' or line[i] == '\t' or line[i] == ' '))
+        while(i < line.length() && (line[i] == '\r' || line[i] == '\t' || line[i] == ' '))
         {
             i++;
         }
 
         if(i >=line.length()) 
         {
-            break; // if we go past the line we will break the main while and return tokens = 0 , indicates issues with line
+            break; // if we go past the line we will break the main while && return tokens = 0 , indicates issues with line
         }
 
         // upto this point we have successfully moved past the trailing spaces
         string word = ""; // word initilization
 
-        while(i <line.length() and line[i] != '\r' and line[i] != '\t' and line[i] != ' ')
+        while(i <line.length() && line[i] != '\r' && line[i] != '\t' && line[i] != ' ')
         {
             word += line[i];
             i++;
@@ -535,7 +535,7 @@ int32_t tokenizeLine(const string &line, Token tokens[], int32_t maxTokens)
 
     return tokenCount;
     // first word is always a instruction keyword
-    // instruction set = [func, func_end, call, set, add, sub, mul and div]
+    // instruction set = [func, func_end, call, set, add, sub, mul && div]
     // next word is identifier like name of a function, variable name
     // after identifier all are the params/arg, space separated
 }
@@ -654,8 +654,8 @@ void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &ti
             }
         }
 
-        else if(keyword == "add" or keyword == "sub" or
-                keyword == "mul" or keyword == "div")
+        else if(keyword == "add" || keyword == "sub" ||
+                keyword == "mul" || keyword == "div")
         {
             if(tokenCount < 3)
             {
@@ -1072,7 +1072,7 @@ int32_t main()
     int64_t mainOffset = resolveProgram("source.bin", "resolve.bin");
     if (mainOffset == -1)
     {
-        cout << "Error: Main function missing or invalid function call\n";
+        cout << "Error: Main function missing || invalid function call\n";
         return 1;
     }
 

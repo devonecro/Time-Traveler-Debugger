@@ -4,3 +4,12 @@ resolve.bin
 server
 session.tdbg
 test_tdbg.py
+
+
+## Windows specific dependencies
+server.exe
+server.ilk
+server.obj
+server.pdb
+vc140.pdb
+
