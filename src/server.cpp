@@ -73,7 +73,7 @@ public:
         delete temp;
         count--;
 
-        return value;
+        return value; // returns the top's value
     }
     T &peek()
     {
@@ -104,7 +104,7 @@ public:
         {
             out[index] = temp->data;
 
-            index++;
+            index++; // counts of data
             temp = temp->next;
         }
         return index;
@@ -196,7 +196,8 @@ void writeHeader(FILE *f, const TTDBHeader &h)
     fwrite(h.magic, 1, 4, f);
     fwrite(&h.version, sizeof(int32_t), 1, f);
 
-    // placeholder for other two data members
+    fwrite(&h.stepCount, sizeof(int32_t), 1, f);
+    fwrite(&h.indexOffset, sizeof(int64_t), 1, f);
 }
 
 // resolve.bin - bookkeeping
@@ -325,13 +326,15 @@ bool validateProgram(const char *sourcePath)
 // PASS 0x1: RESOLVE() -> resolve.bin
 int64_t writeResolveRecord(FILE *f, int64_t offsetField, const string &text)
 {
+    int64_t startPosition = ftell(f);
+
     int32_t stringSize = text.size();
 
     fwrite(&offsetField,sizeof(int64_t),1,f);
     fwrite(&stringSize,sizeof(int32_t),1,f); // format of fwrite(memory_addres_location_of_value_to_store,size,no of items,file)
     fwrite(text.c_str(),sizeof(char),stringSize,f);
 
-    return offsetField; // returns starting point
+    return startPosition; // returns starting point
     // writes one [offset(8B)][size(4B)][string] record at the current file position
     // returns this record's own starting byte position
 }
@@ -545,7 +548,6 @@ void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &ti
     {
         return;
     }
-
     if(mainOffset < 0)
     {
         fclose(file);
@@ -590,10 +592,10 @@ void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &ti
 
         if(tokenCount == 0)
         {
-            continue;
+            continue; // found no token in this line so we move forward to next line
         }
 
-        string keyword = tokens[0].text;
+        string keyword = tokens[0].text; // first word 
 
         Frame &currentFrame = callStack.peek();
 
@@ -603,8 +605,7 @@ void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &ti
             {
                 continue;
             }
-
-            string variableName = tokens[1].text;
+            string variableName = tokens[1].text; 
             int32_t value = stoi(tokens[2].text);
 
             Variable *variable = nullptr;
@@ -831,8 +832,7 @@ void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &ti
 
             for(int i = 0; i < callerArgumentCounts[finishedDepth]; i++)
             {
-                string callerName =
-                    callerArgumentNames[finishedDepth][i];
+                string callerName = callerArgumentNames[finishedDepth][i];
 
                 bool found = false;
 
@@ -873,9 +873,145 @@ void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &ti
 }
 
 
+void writeString(FILE *file, const string &str)
+{
+    int32_t length = static_cast<int32_t>(str.size());
+
+    fwrite(&length, sizeof(int32_t), 1, file);
+
+    fwrite(str.data(), 1, length, file);
+} // helper function for writing strings
+
+
+void writeVariable(FILE *file, const Variable &var)
+{
+    writeString(file, var.name);
+    fwrite(&var.value, sizeof(int32_t), 1, file);
+} // serializes one variable
+
+void writeFrame(FILE *file, const Frame &frame)
+{
+    writeString(file, frame.func_name);
+
+    fwrite(&frame.argc, sizeof(int32_t), 1, file);
+
+    for (int i = 0; i < frame.argc; i++)
+    {
+        writeVariable(file, frame.argv[i]);
+    }
+
+    fwrite(&frame.returnLine, sizeof(int32_t), 1, file);
+
+    fwrite(&frame.localCount, sizeof(int32_t), 1, file);
+
+    for (int i = 0; i < frame.localCount; i++)
+    {
+        writeVariable(file, frame.locals[i]);
+    }
+} // serealizes one frame
+
+
+void writeSnapshot(FILE *file, const Snapshot &snapshot)
+{
+    fwrite(&snapshot.stackDepth, sizeof(int32_t), 1, file);
+
+    for (int i = 0; i < snapshot.stackDepth; i++)
+    {
+        writeFrame(file, snapshot.callStack[i]);
+    }
+}// writes one snapshot
+
 // PASS 0x3: SERIALIZE TIMELINE
 void writeTdbg(Timeline &timeline, const char *tdbgPath)
 {
+
+    FILE *file = fopen(tdbgPath, "wb+");
+
+    if (file == nullptr)
+    {
+        return;
+    }
+
+    int32_t stepCount = timeline.getStepCount();
+
+    TTDBHeader header = {
+        {'T', 'T', 'D', 'B'},
+        1,
+        stepCount,
+        0
+    };
+
+    // writing temp header
+    writeHeader(file, header);
+
+    // here we create index array
+    int64_t *index = new int64_t[stepCount];
+
+    // here we're wriring every snapshot
+    TimelineNode *current = timeline.begin();
+
+    int32_t i = 0;
+
+    while (current != nullptr && i < stepCount)
+    {
+    long snapshotPosition = ftell(file);
+
+    if (snapshotPosition == -1L)
+    {
+        delete[] index;
+        fclose(file);
+        return;
+    }
+
+    index[i] = snapshotPosition;
+
+        writeSnapshot(file, *current->data);
+
+        current = current->next;
+        i++;
+    }
+
+    if (i != stepCount)
+    {
+        cerr << "Timeline count mismatch\n";
+        delete[] index;
+        fclose(file);
+        return;
+    }
+    // storing where the index begins
+    long position = ftell(file);
+
+    if (position == -1L)
+    {
+        delete[] index;
+        fclose(file);
+        return;
+    }
+
+header.indexOffset = position;
+
+    // Writing index
+    // Writing index
+    if (fwrite(index, sizeof(int64_t), stepCount, file) != stepCount)
+    {
+        delete[] index;
+        fclose(file);
+        return;
+    }
+
+    // Update header
+    if (fseek(file, 0, SEEK_SET) != 0)
+    {
+        delete[] index;
+        fclose(file);
+        return;
+    }
+    
+    writeHeader(file, header);
+
+    // Cleanup
+    delete[] index;
+    fclose(file);
     // placeholder for header
     // index array of the size of stepcount from the timeline
     // placing each snapshot in the file while maintaining the index(starting point of each nth snapshot)
@@ -892,6 +1028,10 @@ int32_t main()
     }
 
     int64_t mainOffset = resolveProgram("source.bin", "resolve.bin");
+    if (mainOffset == -1)
+    {
+        return 1;
+    }
 
     Timeline timeline;
     executeProgram("resolve.bin", mainOffset, timeline);
