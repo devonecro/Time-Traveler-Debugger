@@ -7,15 +7,22 @@
 //   3. Pass 0X2   -- execute resolve.bin: tokenize ONE line at a time, update the call stack, take a snapshot -> Timeline
 //   4. Pass 0X3   -- serialize Timeline -> session.tdbg(header + snapshot records + dense index)
 
-
 #include <iostream>
 #include <string>
 #include <cstdint>
 #include <fstream>
-#include <unistd.h>
-#include <sys/socket.h>
-#include <cstdint>
 #include <cstdio>
+#include<stdexcept>
+
+// Platform-specific libraries
+#ifdef _WIN32
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+#else
+    #include <unistd.h>
+    #include <sys/socket.h>
+#endif
+
 using namespace std;
 
 // ---- Constants ----
