@@ -178,6 +178,36 @@ If the connection closes unexpectedly or the file cannot be written correctly, t
 
 
 
+# Monday, 11:37 PM 
+
+## Connecting Phase 2 ; Socket Programming with Phase 1 Pipeline
+
+Main is changed such that it receives the source.bin file and then it uses the existing phase 1 pipeline  as:
+
+1. ValidateProgram()
+2. resolveProgram()
+3. executeProgram()
+4. writeTbdg()
+
+## Sending .tbdg
+
+Once the execution is completed, the server must send the generated file back to the load balancer.
+
+We added a response-sending process that streams the file in chunks. This avoids loading a potentially large .tdbg file entirely into memory.
+
+The response begins with status byte. A successful response uses status 0, followed by the .tdbg payload and its four-byte CRC-32 trailer.
+
+If processing fails, the server sends status 1 followed by an error message and it's checksum.
+
+We also added error handling in this phase for edge cases like such as open socket, invalid instruction.
+
+
+
+
+
+
+
+
 
 
 

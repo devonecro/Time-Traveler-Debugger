@@ -1539,28 +1539,288 @@ bool receiveUploadToFile(
 
     return true;
 }
-// main section
-int32_t main()
+
+
+
+bool runPhaseOnePipeline(
+    const char *sourcePath,
+    const char *resolvePath,
+    const char *tdbgPath,
+    string &errorText
+)
 {
-    if (!validateProgram("source.bin"))
+    std::remove(resolvePath);
+    std::remove(tdbgPath);
+
+    if (!validateProgram(sourcePath))
     {
-        cout << "Error: Invalid program structure\n";
+        errorText = "Invalid program structure";
+
+        return false;
+    }
+
+    int64_t mainOffset =
+        resolveProgram(sourcePath, resolvePath);
+
+    if (mainOffset < 0)
+    {
+        errorText =
+            "Main function missing or invalid function call";
+
+        return false;
+    }
+
+    try
+    {
+        Timeline timeline;
+
+        executeProgram(
+            resolvePath,
+            mainOffset,
+            timeline
+        );
+
+        if (timeline.getStepCount() <= 0)
+        {
+            errorText =
+                "Program execution produced no snapshots";
+
+            return false;
+        }
+
+        if (!writeTdbg(timeline, tdbgPath))
+        {
+            errorText = "Could not write .tdbg file";
+
+            return false;
+        }
+    }
+    catch (const std::exception &exception)
+    {
+        errorText =
+            string("Program execution failed: ") +
+            exception.what();
+
+        std::remove(tdbgPath);
+
+        return false;
+    }
+    catch (...)
+    {
+        errorText = "Program execution failed";
+
+        std::remove(tdbgPath);
+
+        return false;
+    }
+
+    return true;
+}
+
+
+void handleServerClient(Socket clientSock)
+{
+    setSocketTimeouts(
+        clientSock,
+        SOCKET_TIMEOUT_SEC
+    );
+
+    string errorText;
+
+    if (
+        !receiveUploadToFile(
+            clientSock,
+            "source.bin",
+            errorText
+        )
+    )
+    {
+        sendCheckedBytes(
+            clientSock,
+            1,
+            errorText.data(),
+            errorText.size()
+        );
+
+        return;
+    }
+
+    if (
+        !runPhaseOnePipeline(
+            "source.bin",
+            "resolve.bin",
+            "session.tdbg",
+            errorText
+        )
+    )
+    {
+        sendCheckedBytes(
+            clientSock,
+            1,
+            errorText.data(),
+            errorText.size()
+        );
+
+        return;
+    }
+
+    FILE *tdbgFile =
+        std::fopen("session.tdbg", "rb");
+
+    if (tdbgFile == nullptr)
+    {
+        const string message =
+            "Could not open generated .tdbg file";
+
+        sendCheckedBytes(
+            clientSock,
+            1,
+            message.data(),
+            message.size()
+        );
+
+        return;
+    }
+
+    if (!sendCheckedFile(clientSock, 0, tdbgFile))
+    {
+        cerr << "server: failed while sending .tdbg response\n";
+    }
+
+    std::fclose(tdbgFile);
+}
+
+
+// ======================= SERVER MAIN =======================
+
+int main(int argc, char *argv[])
+{
+    if (argc != 2)
+    {
+        cerr << "Usage: ./server <port>\n";
+
         return 1;
     }
 
-    int64_t mainOffset = resolveProgram("source.bin", "resolve.bin");
-    if (mainOffset == -1)
+    char *end = nullptr;
+
+    long parsedPort =
+        std::strtol(argv[1], &end, 10);
+
+    if (
+        end == argv[1] ||
+        *end != '\0' ||
+        parsedPort < 1 ||
+        parsedPort > 65535
+    )
     {
-        cout << "Error: Main function missing || invalid function call\n";
+        cerr << "server: invalid port\n";
+
         return 1;
     }
 
-    Timeline timeline;
-    executeProgram("resolve.bin", mainOffset, timeline);
+    if (!networkInitialize())
+    {
+        cerr << "server: network initialization failed\n";
 
+        return 1;
+    }
 
-    printTimeline(timeline); // this was testing
-    writeTdbg(timeline, "session.tdbg");
+    std::signal(SIGINT, serverSignalHandler);
+
+    Socket listenSock =
+        createServerListenSocket(
+            static_cast<int>(parsedPort)
+        );
+
+    if (listenSock == BAD_SOCKET)
+    {
+        networkCleanup();
+
+        return 1;
+    }
+
+    cout << "server listening on port "
+         << parsedPort << "\n";
+
+    while (!serverStopRequested)
+    {
+        fd_set readSet;
+
+        FD_ZERO(&readSet);
+        FD_SET(listenSock, &readSet);
+
+        timeval waitTime;
+
+        waitTime.tv_sec = 0;
+        waitTime.tv_usec = 500000;
+
+#ifdef _WIN32
+
+        int ready = select(
+            0,
+            &readSet,
+            nullptr,
+            nullptr,
+            &waitTime
+        );
+
+#else
+
+        int ready = select(
+            listenSock + 1,
+            &readSet,
+            nullptr,
+            nullptr,
+            &waitTime
+        );
+
+#endif
+
+        if (ready == 0)
+            continue;
+
+        if (ready < 0)
+        {
+            if (socketInterrupted())
+                continue;
+
+            cerr << "server: select failed: "
+                 << socketErrorText() << "\n";
+
+            break;
+        }
+
+        sockaddr_in clientAddress;
+
+        SocketLength addressLength =
+            sizeof(clientAddress);
+
+        Socket clientSock = accept(
+            listenSock,
+            reinterpret_cast<sockaddr *>(&clientAddress),
+            &addressLength
+        );
+
+        if (clientSock == BAD_SOCKET)
+        {
+            if (socketInterrupted())
+                continue;
+
+            cerr << "server: accept failed: "
+                 << socketErrorText() << "\n";
+
+            continue;
+        }
+
+        handleServerClient(clientSock);
+
+        closeSocket(clientSock);
+    }
+
+    closeSocket(listenSock);
+
+    networkCleanup();
 
     return 0;
 }
