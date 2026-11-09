@@ -25,62 +25,23 @@
 #include "helper.h"
 using namespace std;
 
-
 // ---- Constants ----
+// (IO_BUFFER_SIZE, MAX_VARS_PER_FRAME, MAX_STACK_DEPTH and the structs Variable, Frame, Snapshot,
+//  TTDBHeader now come from helper.h, so they are NOT declared here any more.)
 const char *PROGRAM_NAME = "ttdb";
 const char *PROMPT = "ttdb> ";
-const int IO_BUFFER_SIZE = 64 * 1024;     // fixed buffer for streaming files to and from the socket
-const char *TDBG_FILE = "ttdb_last.tdbg"; // where the downloaded .tdbg is saved
-const int MAX_JUMP = 1000000000;          // biggest n accepted by jmp
-string LB_HOST = "127.0.0.0";
+const char *TDBG_FILE = "ttdb_last.tdbg";     // where the downloaded .tdbg is saved
+const char *TDBG_TEMP_FILE = "ttdb_new.tdbg"; // a download lands here first, so a failed start cannot hurt the old session
+const int MAX_JUMP = 1000000000;              // biggest n accepted by jmp
+string LB_HOST = "127.0.0.1";
 int LB_PORT = 5000;
-
-// These two must be the same as in Phase 1
-
-const int MAX_VARS_PER_FRAME = 16;
-const int MAX_STACK_DEPTH = 64;
-
-
-// ---- Structs (same as Phase 1, so the file can be read back exactly as it was written) ----
-struct Variable
-{
-    string name;
-    int32_t value;
-};
-struct Frame
-{
-    string func_name;
-    int32_t argc;
-    Variable argv[MAX_VARS_PER_FRAME];
-    int32_t returnLine;
-    Variable locals[MAX_VARS_PER_FRAME];
-    int32_t localCount;
-};
-struct Snapshot
-{
-    Frame callStack[MAX_STACK_DEPTH];
-    int32_t stackDepth;
-};
-struct TTDBHeader 
-{
-    char magic[4]; // "TTDB"
-    int32_t version;
-    int32_t stepCount;
-    int64_t indexOffset;
-};
 
 // ---- Structs only the client needs ----
 struct TdbgReader
 {
-    ssize_t file_index;
-    TTDBHeader header;
-    vector<int64_t> index;
-};
-struct DebugSession
-{
-    int active_flag;     // false until a "start" has worked
-    TdbgReader reader;   // the .tdbg file stays open for the whole session
-    int64_t currentStep; 
+    FILE *file = nullptr;     // the .tdbg file stays open for the whole session
+    TTDBHeader header = {};
+    vector<int64_t> index;    // index[i] = byte offset of snapshot i
 };
 
 // =============================================================================================
@@ -103,7 +64,7 @@ int connectToHost(const char *host, int port)
     // Create a TCP socket and connect it to host:port.
     // Return the socket, or -1 if the connection fails.
 }
-bool uploadSource(Socket sock, const char *sourcePath)
+bool uploadSource(int sock, const char *sourcePath)
 {
     FILE *source = fopen(sourcePath, "rb");
 
@@ -155,7 +116,7 @@ bool uploadSource(Socket sock, const char *sourcePath)
     return true;
 }
 bool receiveResponse(
-    Socket sock,
+    int sock,
     const char *outTdbgPath,
     string &outError
 )
@@ -294,7 +255,7 @@ bool receiveResponse(
             writeFailed = true;
     }
 
-    if (!receivedAnyBytes && !writeFailed)
+    if (!receivedAnyBytes)
     {
         remove(outTdbgPath);
 

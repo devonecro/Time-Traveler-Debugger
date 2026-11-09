@@ -262,6 +262,16 @@ main() reads the server’s IP and port from the command line, starts networking
 
 Pressing Ctrl+C sets a flag that both loops watch. They stop, the queued clients’ sockets are closed, and the listening socket is released. Cleaning up matters because leftover open sockets or half-served clients can make the next run misbehave.
 
+# Tuesday, 10 November 2:43 AM
+
+# Setup Changes; moved to Helper.h
+
+
+Client setup changes. The shared constants and structs Variable, Frame, Snapshot etc now live in helper.h, so the client’s copies were removed to avoid redefinition errors. The default load balancer host was 127.0.0.0 (a network address) and is now 127.0.0.1.
+A temp file name was added so a download never overwrites the file the current session is reading.
+
+
+
 
 
 
