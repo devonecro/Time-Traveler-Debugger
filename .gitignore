@@ -1,9 +1,9 @@
-source.bin
 .vscode
 resolve.bin
 server
 session.tdbg
 test_tdbg.py
+a.out
 
 
 ## Windows specific dependencies
