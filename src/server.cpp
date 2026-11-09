@@ -211,53 +211,71 @@ public:
     }
 };
 
-// Core structs
-struct Variable
+// // Core structs
+// struct Variable
+// {
+//     string name;
+//     int32_t value;
+// };
+// struct Frame
+// {
+//     string func_name;
+//     int32_t argc;
+//     Variable argv[MAX_VARS_PER_FRAME];
+//     int32_t returnLine;
+//     Variable locals[MAX_VARS_PER_FRAME];
+//     int32_t localCount;
+// };
+// struct Snapshot
+// {
+//     Frame callStack[MAX_STACK_DEPTH];
+//     int32_t stackDepth;
+// };
+// struct TTDBHeader
+// {
+//     char magic[4]; // "TTDB"
+//     int32_t version;
+//     int32_t stepCount;
+//     int64_t indexOffset;
+// };
+bool writeHeader(FILE *f, const TTDBHeader &h)
 {
-    string name;
-    int32_t value;
-};
-struct Frame
-{
-    string func_name;
-    int32_t argc;
-    Variable argv[MAX_VARS_PER_FRAME];
-    int32_t returnLine;
-    Variable locals[MAX_VARS_PER_FRAME];
-    int32_t localCount;
-};
-struct Snapshot
-{
-    Frame callStack[MAX_STACK_DEPTH];
-    int32_t stackDepth;
-};
-struct TTDBHeader
-{
-    char magic[4]; // "TTDB"
-    int32_t version;
-    int32_t stepCount;
-    int64_t indexOffset;
-};
-void writeHeader(FILE *f, const TTDBHeader &h)
-{
-    fwrite(h.magic, 1, 4, f);
-    fwrite(&h.version, sizeof(int32_t), 1, f);
+    return
+        std::fwrite(h.magic, 1, 4, f) == 4 &&
 
-    fwrite(&h.stepCount, sizeof(int32_t), 1, f);
-    fwrite(&h.indexOffset, sizeof(int64_t), 1, f);
+        std::fwrite(
+            &h.version,
+            sizeof(int32_t),
+            1,
+            f
+        ) == 1 &&
+
+        std::fwrite(
+            &h.stepCount,
+            sizeof(int32_t),
+            1,
+            f
+        ) == 1 &&
+
+        std::fwrite(
+            &h.indexOffset,
+            sizeof(int64_t),
+            1,
+            f
+        ) == 1;
 }
 
 // resolve.bin - bookkeeping
-struct FuncEntry
-{
-    string funcName;
-    int64_t byteOffsetInResolveBin; // where this function's FUNC header record sits
-};
-struct PendingPatch
-{
-    int64_t byteOffsetOfOffsetField; // where in resolve.bin to seek back && overwrite
-    string targetFuncName;
-};
+// struct FuncEntry
+// {
+//     string funcName;
+//     int64_t byteOffsetInResolveBin; // where this function's FUNC header record sits
+// };
+// struct PendingPatch
+// {
+//     int64_t byteOffsetOfOffsetField; // where in resolve.bin to seek back && overwrite
+//     string targetFuncName;
+// };
 
 // PASS 0x0: READING source.bin + VALIDITY CHECK
 bool readSourceLine(ifstream &in, string &out)
@@ -371,44 +389,86 @@ bool validateProgram(const char *sourcePath)
 }
 
 // PASS 0x1: RESOLVE() -> resolve.bin
-int64_t writeResolveRecord(FILE *f, int64_t offsetField, const string &text)
+int64_t writeResolveRecord(
+    FILE *f,
+    int64_t offsetField,
+    const string &text
+)
 {
-    int64_t startPosition = ftell(f);
+    int64_t startPosition = fileTell64(f);
 
-    int32_t stringSize = text.size();
+    if (
+        startPosition < 0 ||
+        text.size() >
+        static_cast<size_t>(
+            std::numeric_limits<int32_t>::max()
+        )
+    )
+        return -1;
 
-    fwrite(&offsetField,sizeof(int64_t),1,f);
-    fwrite(&stringSize,sizeof(int32_t),1,f); // format of fwrite(memory_addres_location_of_value_to_store,size,no of items,file)
-    fwrite(text.c_str(),sizeof(char),stringSize,f);
+    int32_t stringSize =
+        static_cast<int32_t>(text.size());
 
-    return startPosition; // returns starting point
-    // writes one [offset(8B)][size(4B)][string] record at the current file position
-    // returns this record's own starting byte position
+    if (
+        fwrite(&offsetField, sizeof(int64_t), 1, f) != 1 ||
+
+        fwrite(&stringSize, sizeof(int32_t), 1, f) != 1 ||
+
+        (
+            stringSize > 0 &&
+            fwrite(
+                text.data(),
+                1,
+                static_cast<size_t>(stringSize),
+                f
+            ) != static_cast<size_t>(stringSize)
+        )
+    )
+        return -1;
+
+    return startPosition;
 }
+
+
 int64_t readResolveRecord(FILE *f, string &outText)
 {
     int64_t offsetField;
     int32_t stringSize;
 
-    if(fread(&offsetField,sizeof(int64_t),1,f)!=1)
+    if (
+        fread(&offsetField, sizeof(int64_t), 1, f) != 1
+    )
         return -1;
 
-    if(fread(&stringSize,sizeof(int32_t),1,f)!= 1) // checks if it returned 1 item if so then ok otherwise offset is negative resolve.bin is corrupted
+    if (
+        fread(&stringSize, sizeof(int32_t), 1, f) != 1
+    )
         return -1;
 
-    if(stringSize < 0)
+    if (
+        stringSize < 0 ||
+        static_cast<uint64_t>(stringSize) > MAX_SOURCE_BYTES
+    )
         return -1;
-    
-    outText.resize(stringSize);
 
-    if(stringSize > 0)
+    outText.resize(
+        static_cast<size_t>(stringSize)
+    );
+
+    if (stringSize > 0)
     {
-        if(fread(&outText[0],sizeof(char),stringSize,f) != stringSize)
+        if (
+            fread(
+                &outText[0],
+                1,
+                static_cast<size_t>(stringSize),
+                f
+            ) != static_cast<size_t>(stringSize)
+        )
             return -1;
     }
 
     return offsetField;
-    // reads one record at the current position && advances past it, returns the offset field - the raw line text comes back untouched in outText.
 }
 int64_t resolveProgram(const char *sourcePath, const char *resolveBinPath)
 {
@@ -443,11 +503,23 @@ int64_t resolveProgram(const char *sourcePath, const char *resolveBinPath)
     string line;
 
     while(readSourceLine(source,line))
+
     {
-        int64_t currentPosition = ftell(resolveFile); // gets current location of file at start == 0
+        int64_t currentPosition =
+    fileTell64(resolveFile);
 
-        writeResolveRecord(resolveFile,currentPosition,line);
-
+if (
+    currentPosition < 0 ||
+    writeResolveRecord(
+        resolveFile,
+        currentPosition,
+        line
+    ) < 0
+    )
+    {
+        fclose(resolveFile);
+        return -1;
+    }
         string first_word = firstWord(line);
 
         if(first_word == "func")
@@ -476,6 +548,12 @@ int64_t resolveProgram(const char *sourcePath, const char *resolveBinPath)
             patchCount++; // if we have a function to be called we will put it inside the patch struct with it's values
         }
     }
+    
+    if (source.bad())
+    {
+        fclose(resolveFile);
+        return -1;
+    }
     for(int i = 0; i<patchCount; i++)
     {
         int64_t targetOffset = -1;
@@ -495,9 +573,24 @@ int64_t resolveProgram(const char *sourcePath, const char *resolveBinPath)
             return -1;
         }
 
-        fseek(resolveFile,patches[i].byteOffsetOfOffsetField,SEEK_SET); // seekset starts from the start of the file && reaches the defined byteoffset making it to the location where we need to patch
+        if (
+    !fileSeek64(
+        resolveFile,
+        patches[i].byteOffsetOfOffsetField,
+        SEEK_SET
+    ) ||
 
-        fwrite(&targetOffset,sizeof(int64_t),1,resolveFile); // writing the actual offset
+    fwrite(
+        &targetOffset,
+        sizeof(int64_t),
+        1,
+        resolveFile
+    ) != 1
+)
+    {
+        fclose(resolveFile);
+        return -1;
+    }
     }
 
     int64_t mainOffset = -1;
@@ -606,7 +699,11 @@ void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &ti
     string callerArgumentNames[MAX_STACK_DEPTH][MAX_VARS_PER_FRAME];
     int32_t callerArgumentCounts[MAX_STACK_DEPTH] = {};
 
-    fseek(file, mainOffset, SEEK_SET);
+    if (!fileSeek64(file, mainOffset, SEEK_SET))
+    {
+        fclose(file);
+        return;
+    }
 
     string line;
 
@@ -762,11 +859,22 @@ void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &ti
                 continue;
             }
 
-            int32_t returnPosition = ftell(file);
+            int64_t returnPosition64 = fileTell64(file);
+
+            if (
+                returnPosition64 < 0 ||
+                returnPosition64 >
+                std::numeric_limits<int32_t>::max()
+            )
+                break;
+
+            int32_t returnPosition =
+                static_cast<int32_t>(returnPosition64);
 
             Frame &callerFrame = callStack.peek();
 
-            fseek(file, offsetField, SEEK_SET);
+            if (!fileSeek64(file, offsetField, SEEK_SET))
+                break;
 
             string functionLine;
 
@@ -910,7 +1018,8 @@ void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &ti
                 }
             }
 
-            fseek(file, finishedFrame.returnLine, SEEK_SET);
+            if (!fileSeek64(file,finishedFrame.returnLine,SEEK_SET))
+                break;
         }
 
         Snapshot *snapshot = buildSnapshot(callStack);
@@ -919,151 +1028,248 @@ void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &ti
     fclose(file);
 }
 
-
-void writeString(FILE *file, const string &str)
+bool writeString(FILE *file, const string &str)
 {
-    int32_t length = static_cast<int32_t>(str.size());
+    if (
+        str.size() >
+        static_cast<size_t>(
+            std::numeric_limits<int32_t>::max()
+        )
+    )
+        return false;
 
-    fwrite(&length, sizeof(int32_t), 1, file);
+    int32_t length =
+        static_cast<int32_t>(str.size());
 
-    fwrite(str.data(), 1, length, file);
-} // helper function for writing strings
+    if (
+        std::fwrite(
+            &length,
+            sizeof(int32_t),
+            1,
+            file
+        ) != 1
+    )
+        return false;
+
+    return
+        length == 0 ||
+
+        std::fwrite(
+            str.data(),
+            1,
+            static_cast<size_t>(length),
+            file
+        ) == static_cast<size_t>(length);
+}
 
 
-void writeVariable(FILE *file, const Variable &var)
+bool writeVariable(FILE *file, const Variable &var)
 {
-    writeString(file, var.name);
-    fwrite(&var.value, sizeof(int32_t), 1, file);
-} // serializes one variable
+    return
+        writeString(file, var.name) &&
 
-void writeFrame(FILE *file, const Frame &frame)
+        std::fwrite(
+            &var.value,
+            sizeof(int32_t),
+            1,
+            file
+        ) == 1;
+}
+
+
+bool writeFrame(FILE *file, const Frame &frame)
 {
-    writeString(file, frame.func_name);
+    if (
+        frame.argc < 0 ||
+        frame.argc > MAX_VARS_PER_FRAME ||
 
-    fwrite(&frame.argc, sizeof(int32_t), 1, file);
+        frame.localCount < 0 ||
+        frame.localCount > MAX_VARS_PER_FRAME
+    )
+        return false;
 
-    for (int i = 0; i < frame.argc; i++)
+    if (!writeString(file, frame.func_name))
+        return false;
+
+    if (
+        std::fwrite(
+            &frame.argc,
+            sizeof(int32_t),
+            1,
+            file
+        ) != 1
+    )
+        return false;
+
+    for (int i = 0; i < frame.argc; ++i)
     {
-        writeVariable(file, frame.argv[i]);
+        if (!writeVariable(file, frame.argv[i]))
+            return false;
     }
 
-    fwrite(&frame.returnLine, sizeof(int32_t), 1, file);
+    if (
+        std::fwrite(
+            &frame.returnLine,
+            sizeof(int32_t),
+            1,
+            file
+        ) != 1
+    )
+        return false;
 
-    fwrite(&frame.localCount, sizeof(int32_t), 1, file);
+    if (
+        std::fwrite(
+            &frame.localCount,
+            sizeof(int32_t),
+            1,
+            file
+        ) != 1
+    )
+        return false;
 
-    for (int i = 0; i < frame.localCount; i++)
+    for (int i = 0; i < frame.localCount; ++i)
     {
-        writeVariable(file, frame.locals[i]);
+        if (!writeVariable(file, frame.locals[i]))
+            return false;
     }
-} // serealizes one frame
+
+    return true;
+}
 
 
-void writeSnapshot(FILE *file, const Snapshot &snapshot)
+bool writeSnapshot(FILE *file, const Snapshot &snapshot)
 {
-    fwrite(&snapshot.stackDepth, sizeof(int32_t), 1, file);
+    if (
+        snapshot.stackDepth < 0 ||
+        snapshot.stackDepth > MAX_STACK_DEPTH
+    )
+        return false;
 
-    for (int i = 0; i < snapshot.stackDepth; i++)
+    if (
+        std::fwrite(
+            &snapshot.stackDepth,
+            sizeof(int32_t),
+            1,
+            file
+        ) != 1
+    )
+        return false;
+
+    for (int i = 0; i < snapshot.stackDepth; ++i)
     {
-        writeFrame(file, snapshot.callStack[i]);
+        if (!writeFrame(file, snapshot.callStack[i]))
+            return false;
     }
-}// writes one snapshot
+
+    return true;
+}
+
 
 // PASS 0x3: SERIALIZE TIMELINE
-void writeTdbg(Timeline &timeline, const char *tdbgPath)
-{
 
-    FILE *file = fopen(tdbgPath, "wb+");
+bool writeTdbg(Timeline &timeline, const char *tdbgPath)
+{
+    FILE *file = std::fopen(tdbgPath, "wb+");
 
     if (file == nullptr)
-    {
-        return;
-    }
+        return false;
 
-    int32_t stepCount = timeline.getStepCount();
+    const int32_t stepCount =
+        timeline.getStepCount();
+
+    if (stepCount <= 0)
+    {
+        std::fclose(file);
+        std::remove(tdbgPath);
+
+        return false;
+    }
 
     TTDBHeader header = {
         {'T', 'T', 'D', 'B'},
-        1,
+        TTDB_FORMAT_VERSION,
         stepCount,
         0
     };
 
-    // writing temp header
-    writeHeader(file, header);
+    bool ok = writeHeader(file, header);
 
-    // here we create index array
-    int64_t *index = new int64_t[stepCount];
+    vector<int64_t> index(
+        static_cast<size_t>(stepCount)
+    );
 
-    // here we're wriring every snapshot
     TimelineNode *current = timeline.begin();
 
     int32_t i = 0;
 
-    while (current != nullptr && i < stepCount)
+    while (
+        ok &&
+        current != nullptr &&
+        i < stepCount
+    )
     {
-    long snapshotPosition = ftell(file);
+        int64_t position = fileTell64(file);
 
-    if (snapshotPosition == -1L)
-    {
-        delete[] index;
-        fclose(file);
-        return;
-    }
+        if (position < 0)
+        {
+            ok = false;
+            break;
+        }
 
-    index[i] = snapshotPosition;
+        index[static_cast<size_t>(i)] = position;
 
-        writeSnapshot(file, *current->data);
+        if (!writeSnapshot(file, *current->data))
+        {
+            ok = false;
+            break;
+        }
 
         current = current->next;
-        i++;
+
+        ++i;
     }
 
-    if (i != stepCount)
+    if (i != stepCount || current != nullptr)
+        ok = false;
+
+    if (ok)
     {
-        cerr << "Timeline count mismatch\n";
-        delete[] index;
-        fclose(file);
-        return;
-    }
-    // storing where the index begins
-    long position = ftell(file);
+        header.indexOffset = fileTell64(file);
 
-    if (position == -1L)
-    {
-        delete[] index;
-        fclose(file);
-        return;
+        if (header.indexOffset < 0)
+            ok = false;
     }
 
-header.indexOffset = position;
+    if (
+        ok &&
+        std::fwrite(
+            index.data(),
+            sizeof(int64_t),
+            index.size(),
+            file
+        ) != index.size()
+    )
+        ok = false;
 
-    // Writing index
-    // Writing index
-    if (fwrite(index, sizeof(int64_t), stepCount, file) != stepCount)
-    {
-        delete[] index;
-        fclose(file);
-        return;
-    }
+    if (
+        ok &&
+        !fileSeek64(file, 0, SEEK_SET)
+    )
+        ok = false;
 
-    // Update header
-    if (fseek(file, 0, SEEK_SET) != 0)
-    {
-        delete[] index;
-        fclose(file);
-        return;
-    }
+    if (ok && !writeHeader(file, header))
+        ok = false;
 
-    writeHeader(file, header);
+    if (ok && std::fflush(file) != 0)
+        ok = false;
 
-    // Cleanup
-    delete[] index;
-    fclose(file);
-    // placeholder for header
-    // index array of the size of stepcount from the timeline
-    // placing each snapshot in the file while maintaining the index(starting point of each nth snapshot)
-    // after timeline add the index array i the file
-    // update the header
+    if (std::fclose(file) != 0)
+        ok = false;
+
+    if (!ok)
+        std::remove(tdbgPath);
+
+    return ok;
 }
 
 void printTimeline(Timeline &timeline)
