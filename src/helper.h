@@ -249,4 +249,146 @@ inline bool setSocketTimeouts(Socket sock, int seconds)
 }
 
 
+inline int receiveSome(Socket sock, void *buffer, size_t capacity)
+{
+    if (capacity == 0)
+        return 0;
+
+    if (capacity > static_cast<size_t>(INT_MAX))
+        capacity = INT_MAX;
+
+#ifdef _WIN32
+
+    return recv(sock,
+                static_cast<char *>(buffer),
+                static_cast<int>(capacity),
+                0);
+
+#else
+
+    ssize_t received = recv(sock, buffer, capacity, 0);
+
+    if (received > INT_MAX)
+        return INT_MAX;
+
+    return static_cast<int>(received);
+
+#endif
+}
+
+
+inline bool sendAllBytes(Socket sock, const void *buffer, size_t length)
+{
+    const unsigned char *bytes =
+        static_cast<const unsigned char *>(buffer);
+
+    size_t sentTotal = 0;
+
+    while (sentTotal < length)
+    {
+        size_t remaining = length - sentTotal;
+
+        if (remaining > static_cast<size_t>(INT_MAX))
+            remaining = INT_MAX;
+
+#ifdef _WIN32
+
+        int sent = send(
+            sock,
+            reinterpret_cast<const char *>(bytes + sentTotal),
+            static_cast<int>(remaining),
+            0
+        );
+
+#else
+
+#ifdef MSG_NOSIGNAL
+
+        int sent = static_cast<int>(
+            send(sock, bytes + sentTotal, remaining, MSG_NOSIGNAL)
+        );
+
+#else
+
+        int sent = static_cast<int>(
+            send(sock, bytes + sentTotal, remaining, 0)
+        );
+
+#endif
+
+#endif
+
+        if (sent < 0)
+        {
+            if (socketInterrupted())
+                continue;
+
+            return false;
+        }
+
+        if (sent == 0)
+            return false;
+
+        sentTotal += static_cast<size_t>(sent);
+    }
+
+    return true;
+}
+
+
+inline Socket connectHostSocket(const char *host, int port)
+{
+    if (host == nullptr || port < 1 || port > 65535)
+        return BAD_SOCKET;
+
+    addrinfo hints;
+
+    std::memset(&hints, 0, sizeof(hints));
+
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+
+    char portText[16];
+
+    std::snprintf(portText, sizeof(portText), "%d", port);
+
+    addrinfo *results = nullptr;
+
+    if (getaddrinfo(host, portText, &hints, &results) != 0)
+        return BAD_SOCKET;
+
+    Socket connected = BAD_SOCKET;
+
+    for (addrinfo *item = results;
+         item != nullptr;
+         item = item->ai_next)
+    {
+        Socket candidate = socket(
+            item->ai_family,
+            item->ai_socktype,
+            item->ai_protocol
+        );
+
+        if (candidate == BAD_SOCKET)
+            continue;
+
+        if (connect(
+                candidate,
+                item->ai_addr,
+                static_cast<SocketLength>(item->ai_addrlen)
+            ) == 0)
+        {
+            connected = candidate;
+            break;
+        }
+
+        closeSocket(candidate);
+    }
+
+    freeaddrinfo(results);
+
+    return connected;
+}
+
 
