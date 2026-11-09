@@ -93,5 +93,12 @@ Replaced every and with && and every or with ||. In token added keyword enum.
 
 Added shared structs, data structures and libraries in the helper.h file
 
+## Monday, 9 November 9:26 PM
+
+Added functions for socket timeout setters for both windows and linux. Socket error text if an error happened, shutting down both the sockets, shutdownSocketWRite() to tell the other side we are done sending the data.
+and closing the socket when we are done with the client and server connection.
+
+
+
 
 
