@@ -143,7 +143,11 @@ The receiver then compares the last four byes with  the CRC-32 from the status b
 
 This helps us to commute large files in smaller chunks while not storing the whole file in  memory.
 
+# Monday, 9 November 10:18 PM
 
+Shifted, removed already existing libraries and helper from the server.cpp and included helper.h to cater for those libraries and structures.
+
+Addes stack data structure's destructor. Added destructor for Timeline aswell.
 
 
 

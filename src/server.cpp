@@ -7,32 +7,36 @@
 //   3. Pass 0X2   -- execute resolve.bin: tokenize ONE line at a time, update the call stack, take a snapshot -> Timeline
 //   4. Pass 0X3   -- serialize Timeline -> session.tdbg(header + snapshot records + dense index)
 
-#include <iostream>
+#include<iostream>
 #include <string>
 #include <cstdint>
 #include <fstream>
 #include <cstdio>
-#include<stdexcept>
+#include <cstdlib>
+#include <cstring>
+#include <csignal>
+#include <stdexcept>
+#include <vector>
+#include <limits>
 
-// Platform-specific libraries
-#ifdef _WIN32
-    #include <winsock2.h>
-    #include <ws2tcpip.h>
-#else
-    #include <unistd.h>
-    #include <sys/socket.h>
-#endif
+#include "helper.h"
 
 using namespace std;
 
+const int32_t MAX_FUNCS = 128;
+
+const int32_t MAX_TOKENS =
+    MAX_VARS_PER_FRAME + 2;
+
+const int32_t MAX_PATCHES =
+    MAX_FUNCS * 4;
+
+const int32_t SOCKET_TIMEOUT_SEC = 30;
+
 // ---- Constants ----
-const int32_t MAX_VARS_PER_FRAME = 16;
-const int32_t MAX_STACK_DEPTH = 64;
 const int32_t MAX_FUNCS = 128;
 const int32_t MAX_TOKENS = MAX_VARS_PER_FRAME + 2; // kW + func_name + upto 16 params/args
-const int32_t MAX_PATCHES = MAX_FUNCS * 4;
-const uint64_t MAX_SOURCE_BYTES = 15ULL * 1024 * 1024; // sanity cap on the declared file length
-const int32_t IO_BUFFER_SIZE = 64 * 1024;                  // fixed buffer for streaming to/from disk
+const int32_t MAX_PATCHES = MAX_FUNCS * 4; // sanity cap on the declared file length                // fixed buffer for streaming to/from disk
 const int32_t SOCKET_TIMEOUT_SEC = 5;                      // TODO: apply as SO_RCVTIMEO so a deadclient can't hang the server forever
 
 // ---- Custom data structures
@@ -53,6 +57,24 @@ public:
     // Implement these functions:
     Stack():top(nullptr),count(0)
     {}
+    ~Stack()
+    {
+        while (top != nullptr)
+        {
+            Node *oldTop = top;
+
+            top = top->next;
+
+            delete oldTop;
+        }
+    }
+    Stack(const Stack &) = delete;
+
+    Stack &operator=(const Stack &) = delete;
+
+Stack(const Stack &) = delete;
+
+Stack &operator=(const Stack &) = delete;
     void push(const T &val)
     {
         if(count >= MAX_STACK_DEPTH)
@@ -141,6 +163,24 @@ public:
         tail = nullptr;
         stepCount = 0;
     }
+    ~Timeline()
+    {
+        TimelineNode *current = head;
+
+        while (current != nullptr)
+        {
+            TimelineNode *next = current->next;
+
+            delete current->data;
+            delete current;
+
+            current = next;
+        }
+    }
+
+    Timeline(const Timeline &) = delete;
+
+    Timeline &operator=(const Timeline &) = delete;
     void record(Snapshot *s)
     {
         TimelineNode * newNode = new TimelineNode;
@@ -1065,7 +1105,7 @@ int32_t main()
 {
     if (!validateProgram("source.bin"))
     {
-       cout << "Error: Invalid program structure\n";
+        cout << "Error: Invalid program structure\n";
         return 1;
     }
 
