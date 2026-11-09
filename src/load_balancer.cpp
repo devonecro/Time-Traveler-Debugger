@@ -196,10 +196,6 @@ bool shouldKeepRunning()
 {
     return keepRunning.load() && !stopRequested;
 }
-bool shouldKeepRunning()
-{
-    return keepRunning.load() && !stopRequested;
-}
 bool backendIsLocal()
 {
     if (
@@ -327,64 +323,6 @@ void drainClientUpload(Socket clientSock)
 }
 
 // ---- Basic socket helpers ----
-bool sendAll(Socket sock, const char *buffer, size_t length)
-{
-    size_t sentTotal = 0;
-
-    while (sentTotal < length)
-    {
-        size_t remaining = length - sentTotal;
-
-        int chunk = static_cast<int>(
-            std::min(remaining, static_cast<size_t>(INT_MAX))
-        );
-
-#ifdef _WIN32
-
-        int sent = send(
-            sock,
-            buffer + sentTotal,
-            chunk,
-            0
-        );
-
-        if (sent == SOCKET_ERROR)
-        {
-            if (WSAGetLastError() == WSAEINTR)
-                continue;
-
-            return false;
-        }
-
-#else
-
-        ssize_t sent = send(
-            sock,
-            buffer + sentTotal,
-            chunk,
-            MSG_NOSIGNAL
-        );
-
-        if (sent < 0)
-        {
-            if (errno == EINTR)
-                continue;
-
-            return false;
-        }
-#endif
-
-        if (sent == 0)
-        {
-            return false;
-        }
-
-        sentTotal += sent;
-    }
-
-    return true;
-}
-
 
 bool sendError(Socket clientSock, const string &message)
 {
@@ -862,10 +800,6 @@ bool parsePort(const char *text, int &port)
     port = static_cast<int>(value);
 
     return true;
-}
-void handler(int sg) {
-    (void)sg;
-    flag = 0;
 }
 int main(int argc, char *argv[])
 {
