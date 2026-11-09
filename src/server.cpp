@@ -1271,6 +1271,12 @@ bool writeTdbg(Timeline &timeline, const char *tdbgPath)
 
     return ok;
 }
+// Phase 2 ----- server implementation
+
+
+// ======================= PHASE 2 SERVER TRANSPORT =======================
+
+
 
 void printTimeline(Timeline &timeline)
 {
@@ -1305,6 +1311,233 @@ void printTimeline(Timeline &timeline)
 
         current = current->next;
     }
+}
+
+
+static volatile std::sig_atomic_t serverStopRequested = 0;
+
+void serverSignalHandler(int)
+{
+    serverStopRequested = 1;
+}
+
+
+Socket createServerListenSocket(int port)
+{
+    Socket listenSock = socket(
+        AF_INET,
+        SOCK_STREAM,
+        IPPROTO_TCP
+    );
+
+    if (listenSock == BAD_SOCKET)
+    {
+        cerr << "server: socket failed: "
+             << socketErrorText() << "\n";
+
+        return BAD_SOCKET;
+    }
+
+    int reuse = 1;
+
+#ifdef _WIN32
+
+    setsockopt(
+        listenSock,
+        SOL_SOCKET,
+        SO_REUSEADDR,
+        reinterpret_cast<const char *>(&reuse),
+        sizeof(reuse)
+    );
+
+#else
+
+    setsockopt(
+        listenSock,
+        SOL_SOCKET,
+        SO_REUSEADDR,
+        &reuse,
+        sizeof(reuse)
+    );
+
+#endif
+
+    sockaddr_in address;
+
+    std::memset(&address, 0, sizeof(address));
+
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    address.sin_port =
+        htons(static_cast<unsigned short>(port));
+
+    if (
+        bind(
+            listenSock,
+            reinterpret_cast<sockaddr *>(&address),
+            sizeof(address)
+        ) != 0 ||
+
+        listen(listenSock, 16) != 0
+    )
+    {
+        cerr << "server: bind/listen failed: "
+             << socketErrorText() << "\n";
+
+        closeSocket(listenSock);
+
+        return BAD_SOCKET;
+    }
+
+    return listenSock;
+}
+
+
+bool receiveUploadToFile(
+    Socket clientSock,
+    const char *sourcePath,
+    string &errorText
+)
+{
+    FILE *output = std::fopen(sourcePath, "wb");
+
+    if (output == nullptr)
+    {
+        errorText = "server could not create source file";
+
+        // Drain the upload before replying so the client can finish sending.
+        unsigned char discardBuffer[IO_BUFFER_SIZE];
+
+        while (true)
+        {
+            int received = receiveSome(
+                clientSock,
+                discardBuffer,
+                sizeof(discardBuffer)
+            );
+
+            if (received == 0)
+                break;
+
+            if (received < 0 && socketInterrupted())
+                continue;
+
+            if (received < 0)
+                break;
+        }
+
+        return false;
+    }
+
+    TrailerChecker checker;
+
+    unsigned char input[IO_BUFFER_SIZE];
+    unsigned char payload[IO_BUFFER_SIZE];
+
+    bool haveStatus = false;
+
+    unsigned char status = 255;
+
+    uint64_t payloadBytes = 0;
+
+    bool tooLarge = false;
+    bool writeFailed = false;
+    bool receiveFailed = false;
+
+    while (true)
+    {
+        int received = receiveSome(
+            clientSock,
+            input,
+            sizeof(input)
+        );
+
+        if (received == 0)
+            break;
+
+        if (received < 0)
+        {
+            if (socketInterrupted())
+                continue;
+
+            receiveFailed = true;
+            break;
+        }
+
+        size_t ready = checker.feed(
+            input,
+            static_cast<size_t>(received),
+            payload
+        );
+
+        size_t offset = 0;
+
+        if (!haveStatus && ready > 0)
+        {
+            status = payload[0];
+
+            haveStatus = true;
+
+            offset = 1;
+        }
+
+        if (ready > offset)
+        {
+            size_t bodyCount = ready - offset;
+
+            payloadBytes += bodyCount;
+
+            if (payloadBytes > MAX_SOURCE_BYTES)
+            {
+                tooLarge = true;
+            }
+            else if (
+                !writeFailed &&
+                std::fwrite(
+                    payload + offset,
+                    1,
+                    bodyCount,
+                    output
+                ) != bodyCount
+            )
+            {
+                writeFailed = true;
+            }
+        }
+    }
+
+    bool checksumOK = checker.verify();
+
+    if (std::fflush(output) != 0)
+        writeFailed = true;
+
+    if (std::fclose(output) != 0)
+        writeFailed = true;
+
+    if (receiveFailed)
+        errorText = "upload interrupted";
+
+    else if (!checksumOK)
+        errorText = "upload checksum mismatch";
+
+    else if (!haveStatus || status != 0)
+        errorText = "invalid upload status";
+
+    else if (tooLarge)
+        errorText = "source file exceeds 15 MiB limit";
+
+    else if (writeFailed)
+        errorText = "server could not write source file";
+
+    if (!errorText.empty())
+    {
+        std::remove(sourcePath);
+
+        return false;
+    }
+
+    return true;
 }
 // main section
 int32_t main()

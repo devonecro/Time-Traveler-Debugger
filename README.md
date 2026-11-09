@@ -150,6 +150,36 @@ Shifted, removed already existing libraries and helper from the server.cpp and i
 Addes stack data structure's destructor. Added destructor for Timeline aswell.
 
 
+# Monday, 9 November 11:15 PM
+
+## Creating Server Listening Socket
+
+
+The server receives data from the load balancer so we added server listening socket function that creates a socket that is used to commute with the load balancer.
+
+We used TCP socket for the server.
+
+The listening socket is configured to be reused whereever possible, binds it to the requested port and starts listening to the incoming connections.
+When a connection arrives, the server accepts it and obtains a seperate socket for communicating with the incoming particular load-balancer connection.
+
+The listening socket reamins available for the future connection, while the accepted socket is used to receive teh current request and return its response
+
+## Receiving the uploaded File
+
+After the load balancer connects to the server, the server must receive the source file.
+
+Instead of reading the entire uploaded file into one large memory buffer, the server repeatedly received fixed-size chunks and writes that chunks to the source.bin of the server.
+
+This keeps memory usage limited even when the file is large.
+
+The receiveing process also checks the amojnt of data being sent against configured source file limit.
+
+If the connection closes unexpectedly or the file cannot be written correctly, the request is treated as failure.
+
+
+
+
+
 
 
 
