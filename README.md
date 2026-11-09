@@ -202,10 +202,65 @@ If processing fails, the server sends status 1 followed by an error message and 
 We also added error handling in this phase for edge cases like such as open socket, invalid instruction.
 
 
+# Tuesday, 12:17 AM
+
+# Load Balancer Implementation
+
+Load balancer sits between client and server.
+
+## Queue Implementataion
+
+We used a singly linked list to implement queue and waiting client.
+
+We used singly linked list with two pointers, rear and front.
+
+When a new client is connected, enqueue() adds it to the record dequeue removes a client if load balancer has capacity to server another client.
+
+## ClientInfo
+
+This struct is used to hold the client's socket, IP address, port and arrival time.
+The ClientInfo struct holds this information.
+
+Arrival time is used because a client should not remain in the queue for more than 30 seconds. 
 
 
+# Tuesday, 1:03 AM
 
+## Creating Socket
 
+The load balancer accepts connections from clients before it can place them in a queue.
+
+We added a listening socket that binds to the confured client-facing point 5000.
+
+The socket is configured with address, we can reuse whenever needed then placed into listening mode.
+
+The backlog handles connection attempts waiting for accept(), while our own queue stores clients that have already connected and are waiting to be processed.
+
+## Starting Backend Server
+
+If the backend cannot be reached, the load balancer returns the required backend server failed to start error to the client.
+
+Once the load balancer has a connection to the server, it passes the client’s upload along in chunks. When the client finishes, the load balancer half-closes its side of the server connection, which tells the server “that’s everything.” The server then replies, and the load balancer relays the reply back to the client.
+
+In both directions, the load balancer checks the CRC-32 trailer as the data goes through. It doesn’t understand what’s inside the messages, but it won’t pass along one that fails the check.
+
+## acceptLoop()
+
+The acceptor thread’s job is simple: accept a client, record who it is, and put it in the queue. It never waits on the server, so new clients can always connect, even while another one is being served.
+
+Before adding a client, it locks the queue and checks the size. If 8 clients are already waiting, the new one gets server busy, try again later and is closed. Otherwise it joins the queue.
+
+## dispatcherLoop()
+
+The dispatcher takes the next client off the queue and then unlocks the mutex before touching the network. If it stayed locked during a slow request, the acceptor couldn’t add anyone until that request finished.
+
+If the client has been waiting more than 30 seconds, the dispatcher closes its socket without a reply, since the client has already given up. Otherwise it serves the client completely before moving on to the next. The server therefore handles one request at a time, while the load balancer keeps accepting connections.
+
+## main() and shutdown
+
+main() reads the server’s IP and port from the command line, starts networking, creates the listening socket, launches the acceptor thread, and runs the dispatcher in the main thread.
+
+Pressing Ctrl+C sets a flag that both loops watch. They stop, the queued clients’ sockets are closed, and the listening socket is released. Cleaning up matters because leftover open sockets or half-served clients can make the next run misbehave.
 
 
 
