@@ -496,3 +496,159 @@ inline uint32_t decodeChecksum(const unsigned char input[4])
 }
 
 
+class TrailerChecker
+{
+    unsigned char tail[4];
+    size_t tailCount;
+    Crc32 crc;
+
+public:
+
+    TrailerChecker() : tailCount(0)
+    {
+    }
+
+    // Returns bytes that are definitely payload,
+    // retaining the newest four bytes.
+    size_t feed(
+        const unsigned char *input,
+        size_t length,
+        unsigned char *output
+    )
+    {
+        size_t produced = 0;
+
+        for (size_t i = 0; i < length; ++i)
+        {
+            if (tailCount < 4)
+            {
+                tail[tailCount++] = input[i];
+            }
+            else
+            {
+                output[produced++] = tail[0];
+
+                crc.update(tail, 1);
+
+                tail[0] = tail[1];
+                tail[1] = tail[2];
+                tail[2] = tail[3];
+                tail[3] = input[i];
+            }
+        }
+
+        return produced;
+    }
+
+    bool verify() const
+    {
+        return tailCount == 4 &&
+               decodeChecksum(tail) == crc.value();
+    }
+
+    bool getTrailer(unsigned char output[4]) const
+    {
+        if (tailCount != 4)
+            return false;
+
+        std::memcpy(output, tail, 4);
+
+        return true;
+    }
+};
+
+
+inline bool sendCheckedBytes(
+    Socket sock,
+    uint8_t status,
+    const void *payload,
+    size_t payloadLength
+)
+{
+    Crc32 crc;
+
+    crc.update(&status, 1);
+
+    if (!sendAllBytes(sock, &status, 1))
+        return false;
+
+    if (payloadLength > 0)
+    {
+        crc.update(payload, payloadLength);
+
+        if (!sendAllBytes(sock, payload, payloadLength))
+            return false;
+    }
+
+    unsigned char trailer[4];
+
+    encodeChecksum(crc.value(), trailer);
+
+    return sendAllBytes(sock, trailer, sizeof(trailer));
+}
+
+
+inline bool sendCheckedFile(
+    Socket sock,
+    uint8_t status,
+    FILE *file,
+    uint64_t maxPayloadBytes = UINT64_MAX
+)
+{
+    if (file == nullptr)
+        return false;
+
+    if (!fileSeek64(file, 0, SEEK_SET))
+        return false;
+
+    Crc32 crc;
+
+    crc.update(&status, 1);
+
+    if (!sendAllBytes(sock, &status, 1))
+        return false;
+
+    unsigned char buffer[IO_BUFFER_SIZE];
+
+    uint64_t total = 0;
+
+    while (true)
+    {
+        size_t count = std::fread(
+            buffer,
+            1,
+            sizeof(buffer),
+            file
+        );
+
+        if (count > 0)
+        {
+            total += count;
+
+            if (total > maxPayloadBytes)
+                return false;
+
+            crc.update(buffer, count);
+
+            if (!sendAllBytes(sock, buffer, count))
+                return false;
+        }
+
+        if (count < sizeof(buffer))
+        {
+            if (std::ferror(file))
+                return false;
+
+            if (std::feof(file))
+                break;
+        }
+    }
+
+    unsigned char trailer[4];
+
+    encodeChecksum(crc.value(), trailer);
+
+    return sendAllBytes(sock, trailer, sizeof(trailer));
+}
+
+

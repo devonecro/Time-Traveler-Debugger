@@ -119,12 +119,29 @@ Client uses it to connect to loadBalancer and loadBalancer uses it to conenct to
 
 # Monday , 9 November 10: 00PM
 
-# CRC-32
+## CRC-32
 
 We need a method to check if the data was corrupted while travelling. We use CRC-32 as the checksum method. It produces a 32-bit checksum from teh bytes being transmitted.
 The implementation updates the checksum incrementally as data is processed. So we don't have to load the whole source file or debugging file into memory.
 
 The checksum covers the payload message. The sender appends the resulting four-byte checksum to the end of the message.
+
+
+# Monday, 9 November 10:10 PM
+
+## Trailer Checker
+
+We don't know in TCP where does the paylaod end and where dose the checksum begin.
+
+To handle this we used TrailerChecker()
+
+The checker continously processes incoming data bt always keeps the newest four bytes seperate. These four bytes may be part of the payload being commuted, so they can't be treated as the checksum immediately.
+
+When additional bytes arrive, the older bytes can safely be processed as payload. Once the sender closes it's writing side and the receiver reached the end of the stream, the final four bytes are treated as checksum. 
+
+The receiver then compares the last four byes with  the CRC-32 from the status bytes and payload. 
+
+This helps us to commute large files in smaller chunks while not storing the whole file in  memory.
 
 
 
