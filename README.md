@@ -99,6 +99,43 @@ Added functions for socket timeout setters for both windows and linux. Socket er
 and closing the socket when we are done with the client and server connection.
 
 
+# Monday , 9 November 9:50 PM
+
+Add SendAllBytes().
+In TCP normal send doesn't gurantee everything will be sent so we implemented sendallbytes() this functions sends all the by keeping track of what has already been sent and keep sending until the buffer is empty of errror is occured.
+
+It uses receiveSome() to check whatever data is currently available to read.
+
+connectHostSocket()
+
+The client and loadbalancer both need to establish TCP connection.
+
+This functions is used by both client and loadBalancer. It resolves the host and port and creates a socket and attempts to connect to the resulting socket.
+
+It the attempt fails it closes the socket before trying another address.
+
+Client uses it to connect to loadBalancer and loadBalancer uses it to conenct to the backend server.
+
+
+# Monday , 9 November 10: 00PM
+
+# CRC-32
+
+We need a method to check if the data was corrupted while travelling. We use CRC-32 as the checksum method. It produces a 32-bit checksum from teh bytes being transmitted.
+The implementation updates the checksum incrementally as data is processed. So we don't have to load the whole source file or debugging file into memory.
+
+The checksum covers the payload message. The sender appends the resulting four-byte checksum to the end of the message.
+
+
+
+
+
+
+
+
+
+
+
 
 
 

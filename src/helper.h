@@ -391,4 +391,108 @@ inline Socket connectHostSocket(const char *host, int port)
     return connected;
 }
 
+inline int64_t fileTell64(FILE *file)
+{
+#ifdef _WIN32
+
+    return _ftelli64(file);
+
+#else
+
+    return static_cast<int64_t>(ftello(file));
+
+#endif
+}
+
+
+inline bool fileSeek64(FILE *file, int64_t offset, int origin)
+{
+#ifdef _WIN32
+
+    return _fseeki64(file, offset, origin) == 0;
+
+#else
+
+    return fseeko(file, static_cast<off_t>(offset), origin) == 0;
+
+#endif
+}
+
+
+class Crc32
+{
+    uint32_t state;
+
+    static const std::array<uint32_t, 256> &table()
+    {
+        static const std::array<uint32_t, 256> values = []()
+        {
+            std::array<uint32_t, 256> result = {};
+
+            for (uint32_t i = 0; i < 256; ++i)
+            {
+                uint32_t value = i;
+
+                for (int bit = 0; bit < 8; ++bit)
+                {
+                    value = (value & 1U)
+                        ? (value >> 1) ^ 0xEDB88320U
+                        : (value >> 1);
+                }
+
+                result[i] = value;
+            }
+
+            return result;
+        }();
+
+        return values;
+    }
+
+public:
+
+    Crc32() : state(0xFFFFFFFFU)
+    {
+    }
+
+    void update(const void *data, size_t length)
+    {
+        const unsigned char *bytes =
+            static_cast<const unsigned char *>(data);
+
+        const std::array<uint32_t, 256> &lookup = table();
+
+        for (size_t i = 0; i < length; ++i)
+        {
+            state =
+                lookup[(state ^ bytes[i]) & 0xFFU] ^
+                (state >> 8);
+        }
+    }
+
+    uint32_t value() const
+    {
+        return state ^ 0xFFFFFFFFU;
+    }
+};
+
+
+inline void encodeChecksum(uint32_t checksum, unsigned char output[4])
+{
+    output[0] = static_cast<unsigned char>((checksum >> 24) & 0xFFU);
+    output[1] = static_cast<unsigned char>((checksum >> 16) & 0xFFU);
+    output[2] = static_cast<unsigned char>((checksum >> 8) & 0xFFU);
+    output[3] = static_cast<unsigned char>(checksum & 0xFFU);
+}
+
+
+inline uint32_t decodeChecksum(const unsigned char input[4])
+{
+    return
+        (static_cast<uint32_t>(input[0]) << 24) |
+        (static_cast<uint32_t>(input[1]) << 16) |
+        (static_cast<uint32_t>(input[2]) << 8) |
+        static_cast<uint32_t>(input[3]);
+}
+
 
