@@ -1,5 +1,9 @@
 #pragma once
 
+// Linux only (every library the original helper.h used is kept, except the Windows-only ones).
+// Things used by more than one of server.cpp, load_balancer.cpp and client.cpp live here:
+// constants, the .tdbg structs, socket helpers, CRC-32 and the checked send/receive helpers.
+
 #include <array>
 #include <algorithm>
 #include <cerrno>
@@ -7,28 +11,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
-
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <io.h>
-
-using Socket = SOCKET;
-using SocketLength = int;
-static const Socket BAD_SOCKET = INVALID_SOCKET;
-
-#else
 
 #include <unistd.h>
 #include <sys/types.h>
@@ -39,12 +25,7 @@ static const Socket BAD_SOCKET = INVALID_SOCKET;
 #include <sys/time.h>
 #include <signal.h>
 
-using Socket = int;
-using SocketLength = socklen_t;
-static const Socket BAD_SOCKET = -1;
-
-#endif
-
+// ---- Constants ----
 constexpr int32_t MAX_VARS_PER_FRAME = 16;
 constexpr int32_t MAX_STACK_DEPTH = 64;
 
@@ -54,27 +35,29 @@ constexpr size_t IO_BUFFER_SIZE = 64U * 1024U;
 constexpr int32_t TTDB_FORMAT_VERSION = 1;
 constexpr int32_t MAX_TDBG_STRING = 15 * 1024 * 1024;
 
+// Timeouts in seconds.
+constexpr int SOCKET_TIMEOUT_SEC = 5;    // idle time allowed on LB<->client and LB<->server uploads
+constexpr int RESPONSE_TIMEOUT_SEC = 60; // idle time the LB waits for the server while it executes
+constexpr int CLIENT_TIMEOUT_SEC = 40;   // client gives up if nothing arrives (longer than the LB's 30 s queue limit)
 
+// ---- Structs used by both server and client (the .tdbg file is written and read with these) ----
 struct FuncEntry
 {
     std::string funcName;
-    int64_t byteOffsetInResolveBin;
+    int64_t byteOffsetInResolveBin; // where this function's FUNC header record sits
 };
-
 
 struct PendingPatch
 {
-    int64_t byteOffsetOfOffsetField;
+    int64_t byteOffsetOfOffsetField; // where in resolve.bin to seek back and overwrite
     std::string targetFuncName;
 };
-
 
 struct Variable
 {
     std::string name;
     int32_t value;
 };
-
 
 struct Frame
 {
@@ -89,198 +72,107 @@ struct Frame
     int32_t localCount;
 };
 
-
 struct Snapshot
 {
     Frame callStack[MAX_STACK_DEPTH];
     int32_t stackDepth;
 };
 
-
 struct TTDBHeader
 {
-    char magic[4];
+    char magic[4]; // "TTDB"
     int32_t version;
     int32_t stepCount;
     int64_t indexOffset;
 };
 
+// ---- Small helpers ----
 
-inline bool networkInitialize()
+// Strict port parser: digits only, 1..65535.
+inline bool parsePort(const char *text, int &out)
 {
-#ifdef _WIN32
+    if (text == nullptr || *text == '\0')
+        return false;
 
-    WSADATA data;
+    char *end = nullptr;
 
-    return WSAStartup(MAKEWORD(2, 2), &data) == 0;
+    errno = 0;
 
-#else
+    long value = std::strtol(text, &end, 10);
+
+    if (errno != 0 || *end != '\0' || value < 1 || value > 65535)
+        return false;
+
+    out = static_cast<int>(value);
 
     return true;
-
-#endif
 }
 
-
-inline void networkCleanup()
+// 64-bit file positions (the .tdbg and resolve.bin can be large).
+inline int64_t fileTell64(FILE *file)
 {
-#ifdef _WIN32
-
-    WSACleanup();
-
-#endif
+    return static_cast<int64_t>(ftello(file));
 }
 
-
-inline void closeSocket(Socket sock)
+inline bool fileSeek64(FILE *file, int64_t offset, int origin)
 {
-    if (sock == BAD_SOCKET)
-        return;
-
-#ifdef _WIN32
-
-    closesocket(sock);
-
-#else
-
-    close(sock);
-
-#endif
+    return fseeko(file, static_cast<off_t>(offset), origin) == 0;
 }
 
-
-inline void shutdownSocketWrite(Socket sock)
+// ---- Socket helpers ----
+inline void closeSocket(int sock)
 {
-    if (sock == BAD_SOCKET)
-        return;
-
-#ifdef _WIN32
-
-    shutdown(sock, SD_SEND);
-
-#else
-
-    shutdown(sock, SHUT_WR);
-
-#endif
+    if (sock >= 0)
+        close(sock);
 }
 
-
-inline void shutdownSocketBoth(Socket sock)
+// "I am done sending." The other side's recv() then returns 0.
+inline void shutdownSocketWrite(int sock)
 {
-    if (sock == BAD_SOCKET)
-        return;
-
-#ifdef _WIN32
-
-    shutdown(sock, SD_BOTH);
-
-#else
-
-    shutdown(sock, SHUT_RDWR);
-
-#endif
+    if (sock >= 0)
+        shutdown(sock, SHUT_WR);
 }
 
+inline void shutdownSocketBoth(int sock)
+{
+    if (sock >= 0)
+        shutdown(sock, SHUT_RDWR);
+}
 
 inline bool socketInterrupted()
 {
-#ifdef _WIN32
-
-    return WSAGetLastError() == WSAEINTR;
-
-#else
-
     return errno == EINTR;
-
-#endif
 }
 
-
-inline std::string socketErrorText()
+// Applies the same limit to recv() and send(): they fail instead of blocking forever.
+inline bool setSocketTimeouts(int sock, int seconds)
 {
-#ifdef _WIN32
-
-    return std::string("Winsock error ") +
-           std::to_string(WSAGetLastError());
-
-#else
-
-    return std::strerror(errno);
-
-#endif
-}
-
-
-inline bool setSocketTimeouts(Socket sock, int seconds)
-{
-#ifdef _WIN32
-
-    DWORD timeout = static_cast<DWORD>(seconds * 1000);
-
-    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
-                   reinterpret_cast<const char *>(&timeout),
-                   sizeof(timeout)) != 0)
-        return false;
-
-    if (setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO,
-                   reinterpret_cast<const char *>(&timeout),
-                   sizeof(timeout)) != 0)
-        return false;
-
-#else
-
     timeval timeout;
 
     timeout.tv_sec = seconds;
     timeout.tv_usec = 0;
 
-    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
-                   &timeout, sizeof(timeout)) != 0)
-        return false;
-
-    if (setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO,
-                   &timeout, sizeof(timeout)) != 0)
-        return false;
-
-#endif
-
-    return true;
+    return setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0 &&
+           setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0;
 }
 
-
-inline int receiveSome(Socket sock, void *buffer, size_t capacity)
+// One recv(). Returns bytes read, 0 when the peer closed, -1 on error (timeouts included).
+inline int receiveSome(int sock, void *buffer, size_t capacity)
 {
     if (capacity == 0)
         return 0;
 
-    if (capacity > static_cast<size_t>(INT_MAX))
-        capacity = INT_MAX;
+    if (capacity > (1U << 30))
+        capacity = 1U << 30;
 
-#ifdef _WIN32
-
-    return recv(sock,
-                static_cast<char *>(buffer),
-                static_cast<int>(capacity),
-                0);
-
-#else
-
-    ssize_t received = recv(sock, buffer, capacity, 0);
-
-    if (received > INT_MAX)
-        return INT_MAX;
-
-    return static_cast<int>(received);
-
-#endif
+    return static_cast<int>(recv(sock, buffer, capacity, 0));
 }
 
-
-inline bool sendAllBytes(Socket sock, const void *buffer, size_t length)
+// send() may send fewer bytes than asked for, so keep calling it until everything is out.
+// MSG_NOSIGNAL: a closed peer gives an error instead of killing the program with SIGPIPE.
+inline bool sendAllBytes(int sock, const void *buffer, size_t length)
 {
-    const unsigned char *bytes =
-        static_cast<const unsigned char *>(buffer);
+    const unsigned char *bytes = static_cast<const unsigned char *>(buffer);
 
     size_t sentTotal = 0;
 
@@ -288,35 +180,10 @@ inline bool sendAllBytes(Socket sock, const void *buffer, size_t length)
     {
         size_t remaining = length - sentTotal;
 
-        if (remaining > static_cast<size_t>(INT_MAX))
-            remaining = INT_MAX;
+        if (remaining > (1U << 30))
+            remaining = 1U << 30;
 
-#ifdef _WIN32
-
-        int sent = send(
-            sock,
-            reinterpret_cast<const char *>(bytes + sentTotal),
-            static_cast<int>(remaining),
-            0
-        );
-
-#else
-
-#ifdef MSG_NOSIGNAL
-
-        int sent = static_cast<int>(
-            send(sock, bytes + sentTotal, remaining, MSG_NOSIGNAL)
-        );
-
-#else
-
-        int sent = static_cast<int>(
-            send(sock, bytes + sentTotal, remaining, 0)
-        );
-
-#endif
-
-#endif
+        ssize_t sent = send(sock, bytes + sentTotal, remaining, MSG_NOSIGNAL);
 
         if (sent < 0)
         {
@@ -335,118 +202,72 @@ inline bool sendAllBytes(Socket sock, const void *buffer, size_t length)
     return true;
 }
 
-
-inline Socket connectHostSocket(const char *host, int port)
+// Connects to an IPv4 address ("127.0.0.1"; "localhost" is accepted as 127.0.0.1).
+// Used by the client (to the load balancer) and the load balancer (to the server).
+// Returns the socket, or -1 if the connection fails.
+inline int connectHostSocket(const char *host, int port)
 {
     if (host == nullptr || port < 1 || port > 65535)
-        return BAD_SOCKET;
+        return -1;
 
-    addrinfo hints;
+    if (std::strcmp(host, "localhost") == 0)
+        host = "127.0.0.1";
 
-    std::memset(&hints, 0, sizeof(hints));
+    sockaddr_in address;
 
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
+    std::memset(&address, 0, sizeof(address));
 
-    char portText[16];
+    address.sin_family = AF_INET;
+    address.sin_port = htons(static_cast<unsigned short>(port));
 
-    std::snprintf(portText, sizeof(portText), "%d", port);
+    if (inet_pton(AF_INET, host, &address.sin_addr) != 1)
+        return -1;
 
-    addrinfo *results = nullptr;
+    // SOCK_CLOEXEC: a program started with system() must not inherit this socket.
+    int sock = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
 
-    if (getaddrinfo(host, portText, &hints, &results) != 0)
-        return BAD_SOCKET;
+    if (sock < 0)
+        return -1;
 
-    Socket connected = BAD_SOCKET;
-
-    for (addrinfo *item = results;
-         item != nullptr;
-         item = item->ai_next)
+    if (connect(sock, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0)
     {
-        Socket candidate = socket(
-            item->ai_family,
-            item->ai_socktype,
-            item->ai_protocol
-        );
+        close(sock);
 
-        if (candidate == BAD_SOCKET)
-            continue;
-
-        if (connect(
-                candidate,
-                item->ai_addr,
-                static_cast<SocketLength>(item->ai_addrlen)
-            ) == 0)
-        {
-            connected = candidate;
-            break;
-        }
-
-        closeSocket(candidate);
+        return -1;
     }
 
-    freeaddrinfo(results);
-
-    return connected;
+    return sock;
 }
 
-inline int64_t fileTell64(FILE *file)
-{
-#ifdef _WIN32
-
-    return _ftelli64(file);
-
-#else
-
-    return static_cast<int64_t>(ftello(file));
-
-#endif
-}
-
-
-inline bool fileSeek64(FILE *file, int64_t offset, int origin)
-{
-#ifdef _WIN32
-
-    return _fseeki64(file, offset, origin) == 0;
-
-#else
-
-    return fseeko(file, static_cast<off_t>(offset), origin) == 0;
-
-#endif
-}
-
-
+// ---- CRC-32 (the checksum) ----
 class Crc32
 {
     uint32_t state;
 
-    static const std::array<uint32_t, 256> &table()
+    struct Table
     {
-        static const std::array<uint32_t, 256> values = []()
-        {
-            std::array<uint32_t, 256> result = {};
+        uint32_t values[256];
 
+        Table()
+        {
             for (uint32_t i = 0; i < 256; ++i)
             {
                 uint32_t value = i;
 
                 for (int bit = 0; bit < 8; ++bit)
-                {
-                    value = (value & 1U)
-                        ? (value >> 1) ^ 0xEDB88320U
-                        : (value >> 1);
-                }
+                    value = (value & 1U) ? (value >> 1) ^ 0xEDB88320U : (value >> 1);
 
-                result[i] = value;
+                values[i] = value;
             }
+        }
+    };
 
-            return result;
-        }();
+    // Built once, thread-safe (two threads of the load balancer compute CRCs).
+    static const Table &table()
+    {
+        static const Table instance;
 
-        return values;
+        return instance;
     }
 
 public:
@@ -457,17 +278,12 @@ public:
 
     void update(const void *data, size_t length)
     {
-        const unsigned char *bytes =
-            static_cast<const unsigned char *>(data);
+        const unsigned char *bytes = static_cast<const unsigned char *>(data);
 
-        const std::array<uint32_t, 256> &lookup = table();
+        const Table &lookup = table();
 
         for (size_t i = 0; i < length; ++i)
-        {
-            state =
-                lookup[(state ^ bytes[i]) & 0xFFU] ^
-                (state >> 8);
-        }
+            state = lookup.values[(state ^ bytes[i]) & 0xFFU] ^ (state >> 8);
     }
 
     uint32_t value() const
@@ -475,7 +291,6 @@ public:
         return state ^ 0xFFFFFFFFU;
     }
 };
-
 
 inline void encodeChecksum(uint32_t checksum, unsigned char output[4])
 {
@@ -485,17 +300,17 @@ inline void encodeChecksum(uint32_t checksum, unsigned char output[4])
     output[3] = static_cast<unsigned char>(checksum & 0xFFU);
 }
 
-
 inline uint32_t decodeChecksum(const unsigned char input[4])
 {
-    return
-        (static_cast<uint32_t>(input[0]) << 24) |
-        (static_cast<uint32_t>(input[1]) << 16) |
-        (static_cast<uint32_t>(input[2]) << 8) |
-        static_cast<uint32_t>(input[3]);
+    return (static_cast<uint32_t>(input[0]) << 24) |
+           (static_cast<uint32_t>(input[1]) << 16) |
+           (static_cast<uint32_t>(input[2]) << 8) |
+           static_cast<uint32_t>(input[3]);
 }
 
-
+// The receiver cannot know where the body ends until the stream ends, so it always holds back
+// the newest 4 bytes. feed() returns the bytes that are definitely body (status byte included).
+// At the end, verify() compares the held-back 4 bytes with the CRC of everything before them.
 class TrailerChecker
 {
     unsigned char tail[4];
@@ -508,13 +323,7 @@ public:
     {
     }
 
-    // Returns bytes that are definitely payload,
-    // retaining the newest four bytes.
-    size_t feed(
-        const unsigned char *input,
-        size_t length,
-        unsigned char *output
-    )
+    size_t feed(const unsigned char *input, size_t length, unsigned char *output)
     {
         size_t produced = 0;
 
@@ -542,8 +351,7 @@ public:
 
     bool verify() const
     {
-        return tailCount == 4 &&
-               decodeChecksum(tail) == crc.value();
+        return tailCount == 4 && decodeChecksum(tail) == crc.value();
     }
 
     bool getTrailer(unsigned char output[4]) const
@@ -557,13 +365,8 @@ public:
     }
 };
 
-
-inline bool sendCheckedBytes(
-    Socket sock,
-    uint8_t status,
-    const void *payload,
-    size_t payloadLength
-)
+// Sends [status][payload][CRC-32]. The CRC covers the status byte too.
+inline bool sendCheckedBytes(int sock, uint8_t status, const void *payload, size_t payloadLength)
 {
     Crc32 crc;
 
@@ -587,13 +390,8 @@ inline bool sendCheckedBytes(
     return sendAllBytes(sock, trailer, sizeof(trailer));
 }
 
-
-inline bool sendCheckedFile(
-    Socket sock,
-    uint8_t status,
-    FILE *file,
-    uint64_t maxPayloadBytes = UINT64_MAX
-)
+// Same, but streams a file in chunks, so the whole file is never held in memory.
+inline bool sendCheckedFile(int sock, uint8_t status, FILE *file, uint64_t maxPayloadBytes = UINT64_MAX)
 {
     if (file == nullptr)
         return false;
@@ -614,12 +412,7 @@ inline bool sendCheckedFile(
 
     while (true)
     {
-        size_t count = std::fread(
-            buffer,
-            1,
-            sizeof(buffer),
-            file
-        );
+        size_t count = std::fread(buffer, 1, sizeof(buffer), file);
 
         if (count > 0)
         {
@@ -650,5 +443,3 @@ inline bool sendCheckedFile(
 
     return sendAllBytes(sock, trailer, sizeof(trailer));
 }
-
-

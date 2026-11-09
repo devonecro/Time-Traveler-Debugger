@@ -252,11 +252,18 @@ bool forwardCheckedStream(int fromSock,int toSock,string &errorText)
 
     return true;
 }
+// Reads and throws away whatever the client is still sending, so closing the socket afterwards
+// does not reset the connection and wipe out the reply we just sent. Bounded in bytes and time.
 void drainClientUpload(int clientSock)
 {
     unsigned char buffer[IO_BUFFER_SIZE];
 
-    while (true)
+    uint64_t drained = 0;
+
+    time_t started = time(nullptr);
+
+    while (drained <= MAX_SOURCE_BYTES + 16 &&
+           difftime(time(nullptr), started) < 30)
     {
         int received = receiveSome(
             clientSock,
@@ -264,14 +271,10 @@ void drainClientUpload(int clientSock)
             sizeof(buffer)
         );
 
-        if (received == 0)
+        if (received <= 0)
             return;
 
-        if (received < 0)
-        {
-
-            return;
-        }
+        drained += static_cast<uint64_t>(received);
     }
 }
 
@@ -326,7 +329,7 @@ int connectToServer()
     int serverSock = connectHostSocket(serverHost.c_str(), serverPort);
 
     if (serverSock >= 0)
-        setSocketTimeouts(serverSock, SOCKET_TIMEOUT_SEC);
+        setSocketTimeouts(serverSock, RESPONSE_TIMEOUT_SEC); // the server may need time to execute
 
     return serverSock;
 }
@@ -453,6 +456,17 @@ void relayOneClient(const ClientInfo &client)
 // PART 3: THE TWO THREADS
 // =============================================================================================
 
+// Runs on its own detached thread so the acceptor never waits on a slow client.
+// This thread is the one place that closes a refused client's socket.
+void rejectClient(int clientSock)
+{
+    sendError(clientSock, "server busy, try again later");
+
+    drainClientUpload(clientSock);
+
+    closeSocket(clientSock);
+}
+
 void acceptLoop(int listenSock)
 {
     while (flag)
@@ -507,13 +521,7 @@ void acceptLoop(int listenSock)
         }
 
         if (!acceptedIntoQueue)
-        {
-            sendError(clientSock, "server busy, try again later");
-
-            drainClientUpload(clientSock);
-
-            closeSocket(clientSock);
-        }
+            thread(rejectClient, clientSock).detach();
     }
 }
 void dispatcherLoop()
