@@ -45,3 +45,65 @@ static const Socket BAD_SOCKET = -1;
 
 #endif
 
+constexpr int32_t MAX_VARS_PER_FRAME = 16;
+constexpr int32_t MAX_STACK_DEPTH = 64;
+
+constexpr uint64_t MAX_SOURCE_BYTES = 15ULL * 1024ULL * 1024ULL;
+constexpr size_t IO_BUFFER_SIZE = 64U * 1024U;
+
+constexpr int32_t TTDB_FORMAT_VERSION = 1;
+constexpr int32_t MAX_TDBG_STRING = 15 * 1024 * 1024;
+
+
+struct FuncEntry
+{
+    std::string funcName;
+    int64_t byteOffsetInResolveBin;
+};
+
+
+struct PendingPatch
+{
+    int64_t byteOffsetOfOffsetField;
+    std::string targetFuncName;
+};
+
+
+struct Variable
+{
+    std::string name;
+    int32_t value;
+};
+
+
+struct Frame
+{
+    std::string func_name;
+    int32_t argc;
+
+    Variable argv[MAX_VARS_PER_FRAME];
+
+    int32_t returnLine;
+
+    Variable locals[MAX_VARS_PER_FRAME];
+    int32_t localCount;
+};
+
+
+struct Snapshot
+{
+    Frame callStack[MAX_STACK_DEPTH];
+    int32_t stackDepth;
+};
+
+
+struct TTDBHeader
+{
+    char magic[4];
+    int32_t version;
+    int32_t stepCount;
+    int64_t indexOffset;
+};
+
+
+

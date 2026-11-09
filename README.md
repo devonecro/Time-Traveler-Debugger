@@ -87,4 +87,11 @@ Windows Testing Completed through vsstudio using VISUAL STUDIO 2022 compiler.
 Replaced every and with && and every or with ||. In token added keyword enum.
 
 
+## Phase 2
+
+## Monday, 9 November 9:00 PM
+
+Added shared structs, data structures and libraries in the helper.h file
+
+
 
