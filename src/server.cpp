@@ -7,37 +7,22 @@
 //   3. Pass 0X2   -- execute resolve.bin: tokenize ONE line at a time, update the call stack, take a snapshot -> Timeline
 //   4. Pass 0X3   -- serialize Timeline -> session.tdbg(header + snapshot records + dense index)
 
-#include<iostream>
+#include <iostream>
 #include <string>
 #include <cstdint>
 #include <fstream>
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <csignal>
 #include <stdexcept>
-#include <vector>
-#include <limits>
-
+#include <unistd.h>
+#include <sys/socket.h>
 #include "helper.h"
 
 using namespace std;
 
-const int32_t MAX_FUNCS = 128;
-
-const int32_t MAX_TOKENS =
-    MAX_VARS_PER_FRAME + 2;
-
-const int32_t MAX_PATCHES =
-    MAX_FUNCS * 4;
-
-const int32_t SOCKET_TIMEOUT_SEC = 30;
-
 // ---- Constants ----
 const int32_t MAX_FUNCS = 128;
 const int32_t MAX_TOKENS = MAX_VARS_PER_FRAME + 2; // kW + func_name + upto 16 params/args
-const int32_t MAX_PATCHES = MAX_FUNCS * 4; // sanity cap on the declared file length                // fixed buffer for streaming to/from disk
-const int32_t SOCKET_TIMEOUT_SEC = 5;                      // TODO: apply as SO_RCVTIMEO so a deadclient can't hang the server forever
+const int32_t MAX_PATCHES = MAX_FUNCS * 4;
 
 // ---- Custom data structures
 
@@ -72,9 +57,6 @@ public:
 
     Stack &operator=(const Stack &) = delete;
 
-Stack(const Stack &) = delete;
-
-Stack &operator=(const Stack &) = delete;
     void push(const T &val)
     {
         if(count >= MAX_STACK_DEPTH)
@@ -401,7 +383,7 @@ int64_t writeResolveRecord(
         startPosition < 0 ||
         text.size() >
         static_cast<size_t>(
-            std::numeric_limits<int32_t>::max()
+            INT32_MAX
         )
     )
         return -1;
@@ -864,7 +846,7 @@ void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &ti
             if (
                 returnPosition64 < 0 ||
                 returnPosition64 >
-                std::numeric_limits<int32_t>::max()
+                INT32_MAX
             )
                 break;
 
@@ -1033,7 +1015,7 @@ bool writeString(FILE *file, const string &str)
     if (
         str.size() >
         static_cast<size_t>(
-            std::numeric_limits<int32_t>::max()
+            INT32_MAX
         )
     )
         return false;
@@ -1194,9 +1176,7 @@ bool writeTdbg(Timeline &timeline, const char *tdbgPath)
 
     bool ok = writeHeader(file, header);
 
-    vector<int64_t> index(
-        static_cast<size_t>(stepCount)
-    );
+    int64_t *index = new int64_t[stepCount];
 
     TimelineNode *current = timeline.begin();
 
@@ -1243,11 +1223,11 @@ bool writeTdbg(Timeline &timeline, const char *tdbgPath)
     if (
         ok &&
         std::fwrite(
-            index.data(),
+            index,
             sizeof(int64_t),
-            index.size(),
+            static_cast<size_t>(stepCount),
             file
-        ) != index.size()
+        ) != static_cast<size_t>(stepCount)
     )
         ok = false;
 
@@ -1265,6 +1245,8 @@ bool writeTdbg(Timeline &timeline, const char *tdbgPath)
 
     if (std::fclose(file) != 0)
         ok = false;
+
+    delete[] index;
 
     if (!ok)
         std::remove(tdbgPath);
@@ -1314,80 +1296,38 @@ void printTimeline(Timeline &timeline)
 }
 
 
-static volatile std::sig_atomic_t serverStopRequested = 0;
 
-void serverSignalHandler(int)
+int createServerListenSocket(int port)
 {
-    serverStopRequested = 1;
-}
+    int listenSock = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
 
-
-Socket createServerListenSocket(int port)
-{
-    Socket listenSock = socket(
-        AF_INET,
-        SOCK_STREAM,
-        IPPROTO_TCP
-    );
-
-    if (listenSock == BAD_SOCKET)
+    if (listenSock < 0)
     {
-        cerr << "server: socket failed: "
-             << socketErrorText() << "\n";
+        perror("server: socket failed");
 
-        return BAD_SOCKET;
+        return -1;
     }
 
     int reuse = 1;
 
-#ifdef _WIN32
+    setsockopt(listenSock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
-    setsockopt(
-        listenSock,
-        SOL_SOCKET,
-        SO_REUSEADDR,
-        reinterpret_cast<const char *>(&reuse),
-        sizeof(reuse)
-    );
-
-#else
-
-    setsockopt(
-        listenSock,
-        SOL_SOCKET,
-        SO_REUSEADDR,
-        &reuse,
-        sizeof(reuse)
-    );
-
-#endif
-
-    sockaddr_in address;
-
-    std::memset(&address, 0, sizeof(address));
+    sockaddr_in address = {};
 
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_ANY);
-
-    address.sin_port =
-        htons(static_cast<unsigned short>(port));
+    address.sin_port = htons(static_cast<unsigned short>(port));
 
     if (
-        bind(
-            listenSock,
-            reinterpret_cast<sockaddr *>(&address),
-            sizeof(address)
-        ) != 0 ||
-
+        bind(listenSock, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0 ||
         listen(listenSock, 16) != 0
     )
     {
-        cerr << "server: bind/listen failed: "
-             << socketErrorText() << "\n";
+        perror("server: bind/listen failed");
 
-        closeSocket(listenSock);
+        close(listenSock);
 
-        return BAD_SOCKET;
+        return -1;
     }
 
     return listenSock;
@@ -1395,7 +1335,7 @@ Socket createServerListenSocket(int port)
 
 
 bool receiveUploadToFile(
-    Socket clientSock,
+    int clientSock,
     const char *sourcePath,
     string &errorText
 )
@@ -1420,8 +1360,6 @@ bool receiveUploadToFile(
             if (received == 0)
                 break;
 
-            if (received < 0 && socketInterrupted())
-                continue;
 
             if (received < 0)
                 break;
@@ -1458,8 +1396,6 @@ bool receiveUploadToFile(
 
         if (received < 0)
         {
-            if (socketInterrupted())
-                continue;
 
             receiveFailed = true;
             break;
@@ -1618,7 +1554,7 @@ bool runPhaseOnePipeline(
 }
 
 
-void handleServerClient(Socket clientSock)
+void handleServerClient(int clientSock)
 {
     setSocketTimeouts(
         clientSock,
@@ -1695,120 +1631,32 @@ void handleServerClient(Socket clientSock)
 
 int main(int argc, char *argv[])
 {
-    if (argc != 2)
+    int port = 0;
+
+    if (argc != 2 || !parsePort(argv[1], port))
     {
         cerr << "Usage: ./server <port>\n";
 
         return 1;
     }
 
-    char *end = nullptr;
+    int listenSock = createServerListenSocket(port);
 
-    long parsedPort =
-        std::strtol(argv[1], &end, 10);
-
-    if (
-        end == argv[1] ||
-        *end != '\0' ||
-        parsedPort < 1 ||
-        parsedPort > 65535
-    )
-    {
-        cerr << "server: invalid port\n";
-
+    if (listenSock < 0)
         return 1;
-    }
 
-    if (!networkInitialize())
+    cout << "server listening on port " << port << "\n";
+
+    // The load balancer sends one client at a time, so serving them one by one is enough.
+    while (true)
     {
-        cerr << "server: network initialization failed\n";
+        int clientSock = accept(listenSock, nullptr, nullptr);
 
-        return 1;
-    }
-
-    std::signal(SIGINT, serverSignalHandler);
-
-    Socket listenSock =
-        createServerListenSocket(
-            static_cast<int>(parsedPort)
-        );
-
-    if (listenSock == BAD_SOCKET)
-    {
-        networkCleanup();
-
-        return 1;
-    }
-
-    cout << "server listening on port "
-         << parsedPort << "\n";
-
-    while (!serverStopRequested)
-    {
-        fd_set readSet;
-
-        FD_ZERO(&readSet);
-        FD_SET(listenSock, &readSet);
-
-        timeval waitTime;
-
-        waitTime.tv_sec = 0;
-        waitTime.tv_usec = 500000;
-
-#ifdef _WIN32
-
-        int ready = select(
-            0,
-            &readSet,
-            nullptr,
-            nullptr,
-            &waitTime
-        );
-
-#else
-
-        int ready = select(
-            listenSock + 1,
-            &readSet,
-            nullptr,
-            nullptr,
-            &waitTime
-        );
-
-#endif
-
-        if (ready == 0)
-            continue;
-
-        if (ready < 0)
+        if (clientSock < 0)
         {
-            if (socketInterrupted())
-                continue;
+            perror("server: accept failed");
 
-            cerr << "server: select failed: "
-                 << socketErrorText() << "\n";
-
-            break;
-        }
-
-        sockaddr_in clientAddress;
-
-        SocketLength addressLength =
-            sizeof(clientAddress);
-
-        Socket clientSock = accept(
-            listenSock,
-            reinterpret_cast<sockaddr *>(&clientAddress),
-            &addressLength
-        );
-
-        if (clientSock == BAD_SOCKET)
-        {
-            if (socketInterrupted())
-                continue;
-
-            cerr << "server: accept failed: "
-                 << socketErrorText() << "\n";
+            usleep(100000);
 
             continue;
         }
@@ -1817,10 +1665,6 @@ int main(int argc, char *argv[])
 
         closeSocket(clientSock);
     }
-
-    closeSocket(listenSock);
-
-    networkCleanup();
 
     return 0;
 }
