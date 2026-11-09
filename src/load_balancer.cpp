@@ -1,28 +1,15 @@
-// ======================= TIME-TRAVEL DEBUGGER - LOAD BALANCER TEMPLATE =======================
-
-// What load balancer does:
-//   1. Many clients can connect at the same time. Each one sends one string (the source code). 
-//   2. Clients wait in a queue (first come, first served).
-//   3. For each client, in order: make sure the server is running (start it with system() if not),
-//      pass the string to the server, pass the server's reply back to the client.
+// ======================= TIME-TRAVEL DEBUGGER - LOAD BALANCER =======================
 //
+// Many clients connect at the same time. Each sends one source string. They wait in a queue
+// (first come, first served). For each client, in order: make sure the server is running
+// (start it with system() if not), pass the string to the server, pass the reply back.
 // It does not read or understand the messages. It only moves bytes.
-// The only messages it writes itself are errors ("server busy", "server failed to start").
 //
 // Two threads:
-//   acceptor thread (acceptLoop) -> takes new clients and puts them in the queue. It never waits for the server.
-//   main thread (dispatcherLoop) -> takes ONE client out of the queue and serves it completely, then the next.
+//   acceptor thread (acceptLoop)     -> takes new clients and puts them in the queue.
+//   main thread (dispatcherLoop)     -> serves ONE client completely, then the next.
 //
-// How the server is started:
-//   system("./server 5001 &");
-//   The "&" is required. Without it, system() waits until the server exits and the load balancer freezes.
-//
-//
-// What the server program must do (the load balancer depends on this):
-//   - it takes its port as the first argument, for example: ./server 5001
-//   - it reads the string until the connection's write side is closed (recv returns 0)
-//   - it sends its reply as [status: 1 byte][payload], then closes the connection 
-
+// The server is started with system("./server 5001 &"). The "&" is required.
 
 #include <iostream>
 #include <string>
@@ -39,38 +26,17 @@ using namespace std;
 
 
 // ---- Constants ----
-#include <iostream>
-#include <string>
-#include <cstdlib>
-#include <cstring>
-
-#include <thread>
-#include <mutex>
-#include <atomic>
-#include <chrono>
-#include <ctime>
-#include <csignal>
-
-#include "helper.h"
-
-using namespace std;
-
-
-const int LISTEN_BACKLOG = 16;
-const int MAX_PENDING_CLIENTS = 8;
-const int STARTUP_MAX_ATTEMPTS = 50;
-const int STARTUP_POLL_INTERVAL_MS = 100;
-const int CLIENT_QUEUE_TIMEOUT_SEC = 30;
-const int SOCKET_TIMEOUT_SEC = 30;
+const int LISTEN_BACKLOG = 16;             // connections the OS holds until accept() takes them
+const int MAX_PENDING_CLIENTS = 8;         // clients allowed to wait. More than this get "server busy".
+const int STARTUP_MAX_ATTEMPTS = 50;       // after starting the server, how many times we try to connect
+const int STARTUP_POLL_INTERVAL_MS = 100;  // wait between those tries (50 x 100 ms = 5 seconds)
+const int CLIENT_QUEUE_TIMEOUT_SEC = 30;   // a client that waited longer is closed without a reply
 int lbPort = 5000;
 string serverHost = "127.0.0.1";
 int serverPort = 5001;
 
 
-// ---- Queue: here it holds client sockets (int). ----
-// Implement it yourself, do not use std::queue.
-// Hand-written linked-list queue.
-
+// ---- Queue: hand-written linked list (no std::queue) ----
 template <typename T>
 class Queue
 {
@@ -169,33 +135,23 @@ public:
 
 struct ClientInfo
 {
-    Socket sock;
-
-    string address;
-
-    int port;
-
-    time_t arrivedAt;
+    int sock;           // the connected socket
+    string address;     // the client's IP as text
+    int port;           // the client's port
+    time_t arrivedAt;   // when accept() returned
 };
 
-
+// The queue is used by two threads, so every use of it must be inside queueMutex.
 Queue<ClientInfo> pendingClients;
-
 mutex queueMutex;
+volatile sig_atomic_t flag = 1; // set to 0 by SIGINT / SIGTERM; the loops run while (flag)
 
-atomic<bool> keepRunning(true);
-
-volatile sig_atomic_t stopRequested = 0;
-
-
-void loadBalancerSignalHandler(int)
+void handler(int sg)
 {
-    stopRequested = 1;
+    (void)sg;
+    flag = 0;
 }
-bool shouldKeepRunning()
-{
-    return keepRunning.load() && !stopRequested;
-}
+
 bool backendIsLocal()
 {
     if (
@@ -208,12 +164,13 @@ bool backendIsLocal()
         serverHost.size() >= 4 &&
         serverHost.compare(0, 4, "127.") == 0;
 }
+
 // Forwards a checked stream.
 //
 // The final four bytes are withheld until the CRC passes.
 // If verification fails, the checksum trailer is NOT forwarded.
 
-bool forwardCheckedStream(Socket fromSock,Socket toSock,string &errorText)
+bool forwardCheckedStream(int fromSock,int toSock,string &errorText)
 {
     TrailerChecker checker;
 
@@ -236,8 +193,6 @@ bool forwardCheckedStream(Socket fromSock,Socket toSock,string &errorText)
 
         if (received < 0)
         {
-            if (socketInterrupted())
-                continue;
 
             errorText = "stream receive failed";
 
@@ -297,7 +252,7 @@ bool forwardCheckedStream(Socket fromSock,Socket toSock,string &errorText)
 
     return true;
 }
-void drainClientUpload(Socket clientSock)
+void drainClientUpload(int clientSock)
 {
     unsigned char buffer[IO_BUFFER_SIZE];
 
@@ -314,8 +269,6 @@ void drainClientUpload(Socket clientSock)
 
         if (received < 0)
         {
-            if (socketInterrupted())
-                continue;
 
             return;
         }
@@ -323,105 +276,57 @@ void drainClientUpload(Socket clientSock)
 }
 
 // ---- Basic socket helpers ----
-
-bool sendError(Socket clientSock, const string &message)
+// Reply format: [status: 1 byte][payload][checksum: 4 bytes]. Error: status 1 + message text.
+bool sendError(int sock, const string &message)
 {
-    bool sent = sendCheckedBytes(
-        clientSock,
-        1,
-        message.data(),
-        message.size()
-    );
+    bool sent = sendCheckedBytes(sock, 1, message.data(), message.size());
 
-    shutdownSocketWrite(clientSock);
+    shutdownSocketWrite(sock);
 
     return sent;
 }
-Socket createListenSocket(int port)
+int createListenSocket(int port)
 {
-    Socket listenSock = socket(
-        AF_INET,
-        SOCK_STREAM,
-        IPPROTO_TCP
-    );
+    // SOCK_CLOEXEC: the server we start with system() must not inherit this socket.
+    int listenSock = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
 
-    if (listenSock == BAD_SOCKET)
+    if (listenSock < 0)
     {
-        cerr << "load_balancer: socket failed: "
-             << socketErrorText() << "\n";
+        perror("load_balancer: socket failed");
 
-        return BAD_SOCKET;
+        return -1;
     }
 
     int reuse = 1;
 
-#ifdef _WIN32
+    setsockopt(listenSock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
-    setsockopt(
-        listenSock,
-        SOL_SOCKET,
-        SO_REUSEADDR,
-        reinterpret_cast<const char *>(&reuse),
-        sizeof(reuse)
-    );
-
-#else
-
-    setsockopt(
-        listenSock,
-        SOL_SOCKET,
-        SO_REUSEADDR,
-        &reuse,
-        sizeof(reuse)
-    );
-
-#endif
-
-    sockaddr_in address;
-
-    memset(&address, 0, sizeof(address));
+    sockaddr_in address = {};
 
     address.sin_family = AF_INET;
-
     address.sin_addr.s_addr = htonl(INADDR_ANY);
-
-    address.sin_port =
-        htons(static_cast<unsigned short>(port));
+    address.sin_port = htons(static_cast<unsigned short>(port));
 
     if (
-        bind(
-            listenSock,
-            reinterpret_cast<sockaddr *>(&address),
-            sizeof(address)
-        ) != 0 ||
-
+        bind(listenSock, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0 ||
         listen(listenSock, LISTEN_BACKLOG) != 0
     )
     {
-        cerr << "load_balancer: bind/listen failed: "
-             << socketErrorText() << "\n";
+        perror("load_balancer: bind/listen failed");
 
-        closeSocket(listenSock);
+        close(listenSock);
 
-        return BAD_SOCKET;
+        return -1;
     }
 
     return listenSock;
 }
-Socket connectToServer()
+int connectToServer()
 {
-    Socket serverSock = connectHostSocket(
-        serverHost.c_str(),
-        serverPort
-    );
+    int serverSock = connectHostSocket(serverHost.c_str(), serverPort);
 
-    if (serverSock != BAD_SOCKET)
-    {
-        setSocketTimeouts(
-            serverSock,
-            SOCKET_TIMEOUT_SEC
-        );
-    }
+    if (serverSock >= 0)
+        setSocketTimeouts(serverSock, SOCKET_TIMEOUT_SEC);
 
     return serverSock;
 }
@@ -430,65 +335,40 @@ Socket connectToServer()
 // PART 1: WAKING UP THE SERVER IF IT IS DOWN
 // =============================================================================================
 
-
 bool startServer()
 {
     if (!backendIsLocal())
         return false;
 
-    string command;
+    string command = "./server " + to_string(serverPort) + " &";
 
-#ifdef _WIN32
-
-    command =
-        "start \"\" /B server.exe " +
-        to_string(serverPort);
-
-#else
-
-    command =
-        "./server " +
-        to_string(serverPort) +
-        " &";
-
-#endif
-
-    int result = system(command.c_str());
-
-    return result != -1;
+    return system(command.c_str()) == 0;
 }
-Socket connectToServerWithWakeup()
+int connectToServerWithWakeup()
 {
-    Socket serverSock = connectToServer();
+    int serverSock = connectToServer();
 
-    if (serverSock != BAD_SOCKET)
+    if (serverSock >= 0)
         return serverSock;
 
-    if (backendIsLocal() && !startServer())
+    if (!startServer())
     {
-        cerr << "load_balancer: "
-             << "could not launch local backend process\n";
+        cerr << "load_balancer: could not launch local backend process\n";
+
+        return -1;
     }
 
-    for (
-        int attempt = 0;
-        attempt < STARTUP_MAX_ATTEMPTS;
-        ++attempt
-    )
+    for (int attempt = 0; attempt < STARTUP_MAX_ATTEMPTS; ++attempt)
     {
-        this_thread::sleep_for(
-            chrono::milliseconds(
-                STARTUP_POLL_INTERVAL_MS
-            )
-        );
+        usleep(STARTUP_POLL_INTERVAL_MS * 1000);
 
         serverSock = connectToServer();
 
-        if (serverSock != BAD_SOCKET)
+        if (serverSock >= 0)
             return serverSock;
     }
 
-    return BAD_SOCKET;
+    return -1;
 }
 
 // =============================================================================================
@@ -497,10 +377,10 @@ Socket connectToServerWithWakeup()
 
 void relayOneClient(const ClientInfo &client)
 {
-    Socket serverSock =
+    int serverSock =
         connectToServerWithWakeup();
 
-    if (serverSock == BAD_SOCKET)
+    if (serverSock == -1)
     {
         sendError(
             client.sock,
@@ -573,123 +453,44 @@ void relayOneClient(const ClientInfo &client)
 // PART 3: THE TWO THREADS
 // =============================================================================================
 
-void acceptLoop(Socket listenSock)
+void acceptLoop(int listenSock)
 {
-    while (shouldKeepRunning())
+    while (flag)
     {
-        fd_set readSet;
+        sockaddr_in clientAddress = {};
 
-        FD_ZERO(&readSet);
+        socklen_t addressLength = sizeof(clientAddress);
 
-        FD_SET(listenSock, &readSet);
-
-        timeval waitTime;
-
-        waitTime.tv_sec = 0;
-        waitTime.tv_usec = 500000;
-
-#ifdef _WIN32
-
-        int ready = select(
-            0,
-            &readSet,
-            nullptr,
-            nullptr,
-            &waitTime
-        );
-
-#else
-
-        int ready = select(
-            listenSock + 1,
-            &readSet,
-            nullptr,
-            nullptr,
-            &waitTime
-        );
-
-#endif
-
-        if (ready == 0)
-            continue;
-
-        if (ready < 0)
-        {
-            if (socketInterrupted())
-                continue;
-
-            if (shouldKeepRunning())
-            {
-                cerr << "load_balancer: select failed: "
-                     << socketErrorText() << "\n";
-            }
-
-            continue;
-        }
-
-        sockaddr_in clientAddress;
-
-        SocketLength addressLength =
-            sizeof(clientAddress);
-
-        Socket clientSock = accept(
+        int clientSock = accept4(
             listenSock,
             reinterpret_cast<sockaddr *>(&clientAddress),
-            &addressLength
+            &addressLength,
+            SOCK_CLOEXEC
         );
 
-        if (clientSock == BAD_SOCKET)
+        if (clientSock < 0)
         {
-            if (socketInterrupted())
-                continue;
-
-            if (shouldKeepRunning())
+            if (flag)
             {
-                cerr << "load_balancer: accept failed: "
-                     << socketErrorText() << "\n";
+                perror("load_balancer: accept failed");
+
+                usleep(100000);
             }
 
             continue;
         }
 
-        setSocketTimeouts(
-            clientSock,
-            SOCKET_TIMEOUT_SEC
-        );
+        setSocketTimeouts(clientSock, SOCKET_TIMEOUT_SEC);
 
-        char hostText[NI_MAXHOST] = {0};
+        char addressText[INET_ADDRSTRLEN] = "unknown";
 
-        char serviceText[NI_MAXSERV] = {0};
-
-        string addressText = "unknown";
-
-        int clientPort = 0;
-
-        if (
-            getnameinfo(
-                reinterpret_cast<sockaddr *>(&clientAddress),
-                addressLength,
-                hostText,
-                sizeof(hostText),
-                serviceText,
-                sizeof(serviceText),
-                NI_NUMERICHOST | NI_NUMERICSERV
-            ) == 0
-        )
-        {
-            addressText = hostText;
-
-            clientPort = atoi(serviceText);
-        }
+        inet_ntop(AF_INET, &clientAddress.sin_addr, addressText, sizeof(addressText));
 
         ClientInfo info;
 
         info.sock = clientSock;
-
         info.address = addressText;
-
-        info.port = clientPort;
-
+        info.port = ntohs(clientAddress.sin_port);
         info.arrivedAt = time(nullptr);
 
         bool acceptedIntoQueue = false;
@@ -697,10 +498,7 @@ void acceptLoop(Socket listenSock)
         {
             lock_guard<mutex> lock(queueMutex);
 
-            if (
-                pendingClients.size() <
-                MAX_PENDING_CLIENTS
-            )
+            if (pendingClients.size() < MAX_PENDING_CLIENTS)
             {
                 pendingClients.enqueue(info);
 
@@ -710,10 +508,7 @@ void acceptLoop(Socket listenSock)
 
         if (!acceptedIntoQueue)
         {
-            sendError(
-                clientSock,
-                "server busy, try again later"
-            );
+            sendError(clientSock, "server busy, try again later");
 
             drainClientUpload(clientSock);
 
@@ -723,7 +518,7 @@ void acceptLoop(Socket listenSock)
 }
 void dispatcherLoop()
 {
-    while (shouldKeepRunning())
+    while (flag)
     {
         ClientInfo client;
 
@@ -732,29 +527,19 @@ void dispatcherLoop()
         {
             lock_guard<mutex> lock(queueMutex);
 
-            haveClient =
-                pendingClients.dequeue(client);
+            haveClient = pendingClients.dequeue(client);
         }
 
         if (!haveClient)
         {
-            this_thread::sleep_for(
-                chrono::milliseconds(100)
-            );
+            usleep(100000);
 
             continue;
         }
 
-        if (
-            difftime(
-                time(nullptr),
-                client.arrivedAt
-            ) > CLIENT_QUEUE_TIMEOUT_SEC
-        )
+        if (difftime(time(nullptr), client.arrivedAt) > CLIENT_QUEUE_TIMEOUT_SEC)
         {
-            // The specification requires silent closure
-            // for clients waiting longer than 30 seconds.
-
+            // Waited too long: close without a reply.
             closeSocket(client.sock);
 
             continue;
@@ -783,99 +568,49 @@ void closeQueuedClients()
         closeSocket(client.sock);
     }
 }
-bool parsePort(const char *text, int &port)
-{
-    char *end = nullptr;
 
-    long value = strtol(text, &end, 10);
-
-    if (
-        end == text ||
-        *end != '\0' ||
-        value < 1 ||
-        value > 65535
-    )
-        return false;
-
-    port = static_cast<int>(value);
-
-    return true;
-}
 int main(int argc, char *argv[])
 {
     if (argc != 3 && argc != 4)
     {
-        cerr <<
-            "Usage: ./load_balancer "
-            "<server_ip> <server_port> [lb_port]\n";
+        cerr << "Usage: ./load_balancer <server_ip> <server_port> [lb_port]\n";
 
         return 1;
     }
 
     serverHost = argv[1];
 
-    if (
-        !parsePort(argv[2], serverPort) ||
-
-        (
-            argc == 4 &&
-            !parsePort(argv[3], lbPort)
-        )
-    )
+    if (!parsePort(argv[2], serverPort) || (argc == 4 && !parsePort(argv[3], lbPort)))
     {
         cerr << "load_balancer: invalid port\n";
 
         return 1;
     }
 
-    if (!networkInitialize())
-    {
-        cerr <<
-            "load_balancer: network initialization failed\n";
+    signal(SIGINT, handler);  // Ctrl+C clears flag so the loops can stop and clean up
+    signal(SIGTERM, handler);
 
+    int listenSock = createListenSocket(lbPort);
+
+    if (listenSock < 0)
         return 1;
-    }
 
-    signal(SIGINT, loadBalancerSignalHandler);
+    cout << "load balancer listening on port " << lbPort
+         << ", backend " << serverHost << ":" << serverPort << "\n";
 
-    signal(SIGTERM, loadBalancerSignalHandler);
-
-    Socket listenSock =
-        createListenSocket(lbPort);
-
-    if (listenSock == BAD_SOCKET)
-    {
-        networkCleanup();
-
-        return 1;
-    }
-
-    cout << "load balancer listening on port "
-         << lbPort
-         << ", backend "
-         << serverHost
-         << ":"
-         << serverPort
-         << "\n";
-
-    thread acceptThread(
-        acceptLoop,
-        listenSock
-    );
+    thread acceptThread(acceptLoop, listenSock);
 
     dispatcherLoop();
 
-    keepRunning.store(false);
+    flag = 0;
 
-    shutdownSocketBoth(listenSock);
+    shutdownSocketBoth(listenSock); // wakes the acceptor out of accept()
 
     acceptThread.join();
 
     closeSocket(listenSock);
 
     closeQueuedClients();
-
-    networkCleanup();
 
     return 0;
 }
