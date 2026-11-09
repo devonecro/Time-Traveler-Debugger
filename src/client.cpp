@@ -25,6 +25,7 @@
 #include "helper.h"
 using namespace std;
 
+
 // ---- Constants ----
 const char *PROGRAM_NAME = "ttdb";
 const char *PROMPT = "ttdb> ";
@@ -102,19 +103,242 @@ int connectToHost(const char *host, int port)
     // Create a TCP socket and connect it to host:port.
     // Return the socket, or -1 if the connection fails.
 }
-bool uploadSource(int sock, const char *sourcePath)
+bool uploadSource(Socket sock, const char *sourcePath)
 {
-    // have to do checksum and then send
-    // When the file is finished, call shutdown(sock, SHUT_WR). This is how the server knows the string is complete.
-    // Return false if the file cannot be opened or any send fails.
+    FILE *source = fopen(sourcePath, "rb");
+
+    if (source == nullptr)
+    {
+        cerr << "client: could not open source file: "
+             << sourcePath << "\n";
+
+        return false;
+    }
+
+    if (!fileSeek64(source, 0, SEEK_END))
+    {
+        fclose(source);
+
+        return false;
+    }
+
+    int64_t sourceSize = fileTell64(source);
+
+    if (
+        sourceSize < 0 ||
+        static_cast<uint64_t>(sourceSize) >
+        MAX_SOURCE_BYTES
+    )
+    {
+        cerr <<
+            "client: source file must be no larger than 15 MiB\n";
+
+        fclose(source);
+
+        return false;
+    }
+
+    bool sent = sendCheckedFile(
+        sock,
+        0,
+        source,
+        MAX_SOURCE_BYTES
+    );
+
+    fclose(source);
+
+    if (!sent)
+        return false;
+
+    shutdownSocketWrite(sock);
+
+    return true;
 }
-bool receiveResponse(int sock, const char *outTdbgPath, string &outError)
+bool receiveResponse(
+    Socket sock,
+    const char *outTdbgPath,
+    string &outError
+)
 {
-    // Reply on the wire: [status][payload][CRC-32]. The CRC covers the status byte too.
-    // Feed every received byte (status included) to a TrailerChecker.
-    // Status 1: collect the payload into outError. Status 0: write the payload to the file.
-    // At the end call verify(). If it fails, delete the file, set outError to
-    // "checksum mismatch, response corrupted" and return false.
+    outError.clear();
+
+    TrailerChecker checker;
+
+    unsigned char input[IO_BUFFER_SIZE];
+
+    unsigned char readyBytes[IO_BUFFER_SIZE];
+
+    bool statusSeen = false;
+
+    bool receivedAnyBytes = false;
+
+    unsigned char status = 255;
+
+    uint64_t bodyBytes = 0;
+
+    bool invalidStatus = false;
+
+    bool writeFailed = false;
+
+    FILE *outputFile = nullptr;
+
+    const size_t MAX_ERROR_TEXT = 1024 * 1024;
+
+    while (true)
+    {
+        int received = receiveSome(
+            sock,
+            input,
+            sizeof(input)
+        );
+
+        if (received == 0)
+            break;
+
+        if (received < 0)
+        {
+            if (socketInterrupted())
+                continue;
+
+            writeFailed = true;
+
+            break;
+        }
+
+        receivedAnyBytes = true;
+
+        size_t ready = checker.feed(
+            input,
+            static_cast<size_t>(received),
+            readyBytes
+        );
+
+        size_t offset = 0;
+
+        if (!statusSeen && ready > 0)
+        {
+            status = readyBytes[0];
+
+            statusSeen = true;
+
+            offset = 1;
+
+            if (status == 0)
+            {
+                outputFile = fopen(
+                    outTdbgPath,
+                    "wb"
+                );
+
+                if (outputFile == nullptr)
+                    writeFailed = true;
+            }
+            else if (status != 1)
+            {
+                invalidStatus = true;
+            }
+        }
+
+        if (ready > offset && statusSeen)
+        {
+            size_t count = ready - offset;
+
+            bodyBytes += count;
+
+            if (status == 0)
+            {
+                if (
+                    outputFile != nullptr &&
+                    !writeFailed &&
+                    fwrite(
+                        readyBytes + offset,
+                        1,
+                        count,
+                        outputFile
+                    ) != count
+                )
+                {
+                    writeFailed = true;
+                }
+            }
+            else if (status == 1)
+            {
+                if (
+                    outError.size() + count <=
+                    MAX_ERROR_TEXT
+                )
+                {
+                    outError.append(
+                        reinterpret_cast<const char *>(
+                            readyBytes + offset
+                        ),
+                        count
+                    );
+                }
+                else
+                {
+                    invalidStatus = true;
+                }
+            }
+        }
+    }
+
+    bool checksumOK = checker.verify();
+
+    if (outputFile != nullptr)
+    {
+        if (fflush(outputFile) != 0)
+            writeFailed = true;
+
+        if (fclose(outputFile) != 0)
+            writeFailed = true;
+    }
+
+    if (!receivedAnyBytes && !writeFailed)
+    {
+        remove(outTdbgPath);
+
+        outError =
+            "load balancer closed the connection "
+            "without a response (queue timeout is possible)";
+
+        return false;
+    }
+
+    if (
+        !checksumOK ||
+        !statusSeen ||
+        invalidStatus ||
+        writeFailed
+    )
+    {
+        remove(outTdbgPath);
+
+        outError = "response corrupted";
+
+        return false;
+    }
+
+    if (status == 1)
+    {
+        remove(outTdbgPath);
+
+        if (outError.empty())
+            outError = "server returned an error";
+
+        return false;
+    }
+
+    if (status != 0 || bodyBytes == 0)
+    {
+        remove(outTdbgPath);
+
+        outError = "response corrupted";
+
+        return false;
+    }
+
+    return true;
 }
 
 // =============================================================================================
@@ -221,5 +445,4 @@ int main(int argc, char *argv[])
     //
     // After the loop: closeSession(session) and return 0.
     // Never exit the loop because of an error. Only quit or the end of the input leaves it.
-
 }
