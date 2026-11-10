@@ -287,6 +287,28 @@ recvAll() keeps calling recv() until exactly n bytes have arrived, because TCP m
 closes the file and frees the index vector. readSnapshotAt() looks up index[step], seeks straight there without reading earlier steps, and rebuilds the snapshot on the heap. It returns nullptr if the step is out of range or the data is damaged. The caller deletes the snapshot.
 
 
+# Tuesday, 10 November 6:00 PM
+
+
+## initSession()
+initSession() puts the session in its starting state: no active file, an empty reader, step 0. closeSession() closes the .tdbg only if a session is active and then marks it inactive. It runs when the user types quit or when the input ends.
+
+
+## showCurrent()
+showCurrent() reads the snapshot at the current step through the index, prints it as step currentStep + 1, and frees it. If the read fails it prints “damaged .tdbg file”.
+
+
+## moveBy()
+moveBy() is the one function behind next, prv and both jmp commands. It refuses to run without a session, and refuses to move before step 1 or past the last step, printing where you are and keeping the position unchanged. Otherwise it moves and shows the new step. If the snapshot turns out damaged it goes back to the previous step. cmdNext, cmdPrv, cmdJmpNext and cmdJmpPrv just call it with +1, −1, +n and −n. None of them touch the network; they only read the saved file.
+
+## cmdStart()
+cmdStart() sends the source through requestDebugFile() into a temp file. If that fails, it prints the error and keeps the old session. It then opens the file into a new local reader, and a bad file prints “server sent a damaged .tdbg file” and also keeps the old session. Only after both succeed does it rename the download to ttdb_last.tdbg, close the old reader, put the new one in the session, and show step 1. Downloading to a temp name matters because saving straight to ttdb_last.tdbg would overwrite the file the old session is still reading.
+
+
+
+
+
+
 
 
 
