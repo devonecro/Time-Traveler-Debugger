@@ -22,7 +22,7 @@ using namespace std;
 // ---- Constants ----
 const int32_t MAX_FUNCS = 128;
 const int32_t MAX_TOKENS = MAX_VARS_PER_FRAME + 2; // kW + func_name + upto 16 params/args
-const int32_t MAX_PATCHES = MAX_FUNCS * 4;
+const int32_t MAX_PATCHES = MAX_FUNCS * 16; // Increased to 2048 to handle large files
 
 // ---- Custom data structures
 
@@ -193,33 +193,6 @@ public:
     }
 };
 
-// // Core structs
-// struct Variable
-// {
-//     string name;
-//     int32_t value;
-// };
-// struct Frame
-// {
-//     string func_name;
-//     int32_t argc;
-//     Variable argv[MAX_VARS_PER_FRAME];
-//     int32_t returnLine;
-//     Variable locals[MAX_VARS_PER_FRAME];
-//     int32_t localCount;
-// };
-// struct Snapshot
-// {
-//     Frame callStack[MAX_STACK_DEPTH];
-//     int32_t stackDepth;
-// };
-// struct TTDBHeader
-// {
-//     char magic[4]; // "TTDB"
-//     int32_t version;
-//     int32_t stepCount;
-//     int64_t indexOffset;
-// };
 bool writeHeader(FILE *f, const TTDBHeader &h)
 {
     return
@@ -246,18 +219,6 @@ bool writeHeader(FILE *f, const TTDBHeader &h)
             f
         ) == 1;
 }
-
-// resolve.bin - bookkeeping
-// struct FuncEntry
-// {
-//     string funcName;
-//     int64_t byteOffsetInResolveBin; // where this function's FUNC header record sits
-// };
-// struct PendingPatch
-// {
-//     int64_t byteOffsetOfOffsetField; // where in resolve.bin to seek back && overwrite
-//     string targetFuncName;
-// };
 
 // PASS 0x0: READING source.bin + VALIDITY CHECK
 bool readSourceLine(ifstream &in, string &out)
@@ -458,15 +419,6 @@ int64_t resolveProgram(const char *sourcePath, const char *resolveBinPath)
     int32_t funcCount = 0;
     PendingPatch patches[MAX_PATCHES];
     int32_t patchCount = 0;
-    // Every source line becomes one record holding the raw line, as-is.
-    // resolve() only PEEKS at the leading word(s) -- enough to spot FUNC
-    // (remember its position) && CALL (remember which function it needs
-    // && where its offset field sits).
-    // Once the whole file is written, every CALL's offset field is patched
-    // with its target's position. Patching happens after the full write
-    // Returns the byte offset of main's FUNC header record.
-    // if there is no main return the error 
-
 
     ifstream source(sourcePath, ios::binary); // code starts here
 
@@ -487,21 +439,20 @@ int64_t resolveProgram(const char *sourcePath, const char *resolveBinPath)
     while(readSourceLine(source,line))
 
     {
-        int64_t currentPosition =
-    fileTell64(resolveFile);
+        int64_t currentPosition = fileTell64(resolveFile);
 
-if (
-    currentPosition < 0 ||
-    writeResolveRecord(
-        resolveFile,
-        currentPosition,
-        line
-    ) < 0
-    )
-    {
-        fclose(resolveFile);
-        return -1;
-    }
+        if (
+            currentPosition < 0 ||
+            writeResolveRecord(
+                resolveFile,
+                currentPosition,
+                line
+            ) < 0
+        )
+        {
+            fclose(resolveFile);
+            return -1;
+        }
         string first_word = firstWord(line);
 
         if(first_word == "func")
@@ -521,13 +472,13 @@ if (
             if(patchCount >= MAX_PATCHES)
             {
                 fclose(resolveFile);
-                return -1;
+                return -2; // Specific error for too many patches
             }
 
-            patches[patchCount].byteOffsetOfOffsetField = currentPosition; // this tells we have to cocme back to this offset to replace the location when the function is found
+            patches[patchCount].byteOffsetOfOffsetField = currentPosition; 
             patches[patchCount].targetFuncName = secondWord(line);
 
-            patchCount++; // if we have a function to be called we will put it inside the patch struct with it's values
+            patchCount++; 
         }
     }
     
@@ -556,23 +507,23 @@ if (
         }
 
         if (
-    !fileSeek64(
-        resolveFile,
-        patches[i].byteOffsetOfOffsetField,
-        SEEK_SET
-    ) ||
+            !fileSeek64(
+                resolveFile,
+                patches[i].byteOffsetOfOffsetField,
+                SEEK_SET
+            ) ||
 
-    fwrite(
-        &targetOffset,
-        sizeof(int64_t),
-        1,
-        resolveFile
-    ) != 1
-)
-    {
-        fclose(resolveFile);
-        return -1;
-    }
+            fwrite(
+                &targetOffset,
+                sizeof(int64_t),
+                1,
+                resolveFile
+            ) != 1
+        )
+        {
+            fclose(resolveFile);
+            return -1;
+        }
     }
 
     int64_t mainOffset = -1;
@@ -603,14 +554,14 @@ struct Token
     enum TokenType type;
     string text;
 };
+
 int32_t tokenizeLine(const string &line, Token tokens[], int32_t maxTokens)
 {
     int32_t tokenCount = 0;
     int i = 0;
 
-    while(i < line.length() && tokenCount < maxTokens)
+    while(i < line.length()) // Changed to allow detection of too many tokens
     {
-
         while(i < line.length() && (line[i] == '\r' || line[i] == '\t' || line[i] == ' '))
         {
             i++;
@@ -618,11 +569,15 @@ int32_t tokenizeLine(const string &line, Token tokens[], int32_t maxTokens)
 
         if(i >=line.length()) 
         {
-            break; // if we go past the line we will break the main while && return tokens = 0 , indicates issues with line
+            break; 
         }
 
-        // upto this point we have successfully moved past the trailing spaces
-        string word = ""; // word initilization
+        // Overflow check
+        if (tokenCount >= maxTokens) {
+            return -1;
+        }
+
+        string word = ""; 
 
         while(i <line.length() && line[i] != '\r' && line[i] != '\t' && line[i] != ' ')
         {
@@ -649,17 +604,13 @@ int32_t tokenizeLine(const string &line, Token tokens[], int32_t maxTokens)
     }
 
     return tokenCount;
-    // first word is always a instruction keyword
-    // instruction set = [func, func_end, call, set, add, sub, mul && div]
-    // next word is identifier like name of a function, variable name
-    // after identifier all are the params/arg, space separated
 }
+
 Snapshot *buildSnapshot(Stack<Frame> &callStack)
 {
     Snapshot * snapshot = new Snapshot;
     snapshot->stackDepth = callStack.snapshot_into(snapshot->callStack,MAX_STACK_DEPTH);
-    return snapshot; // copies the callStack
-    // build the snapshot based on the callStack given
+    return snapshot; 
 }
 
 void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &timeline)
@@ -716,12 +667,18 @@ void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &ti
         Token tokens[MAX_TOKENS];
         int32_t tokenCount = tokenizeLine(line, tokens, MAX_TOKENS);
 
-        if(tokenCount == 0)
+        if (tokenCount < 0) 
         {
-            continue; // found no token in this line so we move forward to next line
+            fclose(file);
+            throw std::runtime_error("Too many arguments. Maximum is 16.");
         }
 
-        string keyword = tokens[0].text; // first word 
+        if(tokenCount == 0)
+        {
+            continue; 
+        }
+
+        string keyword = tokens[0].text; 
 
         Frame &currentFrame = callStack.peek();
 
@@ -870,16 +827,24 @@ void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &ti
             int32_t functionTokenCount =
                 tokenizeLine(functionLine, functionTokens, MAX_TOKENS);
 
+            if (functionTokenCount < 0) 
+            {
+                fclose(file);
+                throw std::runtime_error("Too many arguments. Maximum is 16.");
+            }
+
             if(functionTokenCount < 2 ||
                functionTokens[0].text != "func" ||
                functionTokenCount != tokenCount)
             {
-                break;
+               fclose(file);
+               throw std::runtime_error("Argument count mismatch or undefined function in call.");
             }
 
             if(callStack.depth() >= MAX_STACK_DEPTH)
             {
-                break;
+                fclose(file);
+                throw std::overflow_error("Stack size exceeded!");
             }
 
             Frame newFrame;
@@ -946,7 +911,8 @@ void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &ti
 
             if(!validArguments)
             {
-                break;
+                fclose(file);
+                throw std::runtime_error("Invalid or undefined variable passed as argument.");
             }
 
             callStack.push(newFrame);
@@ -1253,12 +1219,8 @@ bool writeTdbg(Timeline &timeline, const char *tdbgPath)
 
     return ok;
 }
-// Phase 2 ----- server implementation
-
 
 // ======================= PHASE 2 SERVER TRANSPORT =======================
-
-
 
 void printTimeline(Timeline &timeline)
 {
@@ -1294,8 +1256,6 @@ void printTimeline(Timeline &timeline)
         current = current->next;
     }
 }
-
-
 
 int createServerListenSocket(int port)
 {
@@ -1477,7 +1437,6 @@ bool receiveUploadToFile(
 }
 
 
-
 bool runPhaseOnePipeline(
     const char *sourcePath,
     const char *resolvePath,
@@ -1498,11 +1457,14 @@ bool runPhaseOnePipeline(
     int64_t mainOffset =
         resolveProgram(sourcePath, resolvePath);
 
-    if (mainOffset < 0)
+    if (mainOffset == -2)
     {
-        errorText =
-            "Main function missing or invalid function call";
-
+        errorText = "Too many function calls in source file (exceeds MAX_PATCHES)";
+        return false;
+    }
+    else if (mainOffset < 0)
+    {
+        errorText = "Main function missing or invalid function call";
         return false;
     }
 
