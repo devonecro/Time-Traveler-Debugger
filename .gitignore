@@ -1,9 +1,16 @@
-source.bin
 .vscode
 resolve.bin
 server
 session.tdbg
 test_tdbg.py
+a.out
+client
+stress_test.py
+valid.src
+invalid.src
+source.bin
+test_output.txt
+ttdb_last.tdbg
 
 
 ## Windows specific dependencies

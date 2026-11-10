@@ -87,4 +87,262 @@ Windows Testing Completed through vsstudio using VISUAL STUDIO 2022 compiler.
 Replaced every and with && and every or with ||. In token added keyword enum.
 
 
+## Phase 2
+
+## Monday, 9 November 9:00 PM
+
+Added shared structs, data structures and libraries in the helper.h file
+
+## Monday, 9 November 9:26 PM
+
+Added functions for socket timeout setters for both windows and linux. Socket error text if an error happened, shutting down both the sockets, shutdownSocketWRite() to tell the other side we are done sending the data.
+and closing the socket when we are done with the client and server connection.
+
+
+# Monday , 9 November 9:50 PM
+
+Add SendAllBytes().
+In TCP normal send doesn't gurantee everything will be sent so we implemented sendallbytes() this functions sends all the by keeping track of what has already been sent and keep sending until the buffer is empty of errror is occured.
+
+It uses receiveSome() to check whatever data is currently available to read.
+
+connectHostSocket()
+
+The client and loadbalancer both need to establish TCP connection.
+
+This functions is used by both client and loadBalancer. It resolves the host and port and creates a socket and attempts to connect to the resulting socket.
+
+It the attempt fails it closes the socket before trying another address.
+
+Client uses it to connect to loadBalancer and loadBalancer uses it to conenct to the backend server.
+
+
+# Monday , 9 November 10: 00PM
+
+## CRC-32
+
+We need a method to check if the data was corrupted while travelling. We use CRC-32 as the checksum method. It produces a 32-bit checksum from teh bytes being transmitted.
+The implementation updates the checksum incrementally as data is processed. So we don't have to load the whole source file or debugging file into memory.
+
+The checksum covers the payload message. The sender appends the resulting four-byte checksum to the end of the message.
+
+
+# Monday, 9 November 10:10 PM
+
+## Trailer Checker
+
+We don't know in TCP where does the paylaod end and where dose the checksum begin.
+
+To handle this we used TrailerChecker()
+
+The checker continously processes incoming data bt always keeps the newest four bytes seperate. These four bytes may be part of the payload being commuted, so they can't be treated as the checksum immediately.
+
+When additional bytes arrive, the older bytes can safely be processed as payload. Once the sender closes it's writing side and the receiver reached the end of the stream, the final four bytes are treated as checksum. 
+
+The receiver then compares the last four byes with  the CRC-32 from the status bytes and payload. 
+
+This helps us to commute large files in smaller chunks while not storing the whole file in  memory.
+
+# Monday, 9 November 10:18 PM
+
+Shifted, removed already existing libraries and helper from the server.cpp and included helper.h to cater for those libraries and structures.
+
+Addes stack data structure's destructor. Added destructor for Timeline aswell.
+
+
+# Monday, 9 November 11:15 PM
+
+## Creating Server Listening Socket
+
+
+The server receives data from the load balancer so we added server listening socket function that creates a socket that is used to commute with the load balancer.
+
+We used TCP socket for the server.
+
+The listening socket is configured to be reused whereever possible, binds it to the requested port and starts listening to the incoming connections.
+When a connection arrives, the server accepts it and obtains a seperate socket for communicating with the incoming particular load-balancer connection.
+
+The listening socket reamins available for the future connection, while the accepted socket is used to receive teh current request and return its response
+
+## Receiving the uploaded File
+
+After the load balancer connects to the server, the server must receive the source file.
+
+Instead of reading the entire uploaded file into one large memory buffer, the server repeatedly received fixed-size chunks and writes that chunks to the source.bin of the server.
+
+This keeps memory usage limited even when the file is large.
+
+The receiveing process also checks the amojnt of data being sent against configured source file limit.
+
+If the connection closes unexpectedly or the file cannot be written correctly, the request is treated as failure.
+
+
+
+# Monday, 11:37 PM 
+
+## Connecting Phase 2 ; Socket Programming with Phase 1 Pipeline
+
+Main is changed such that it receives the source.bin file and then it uses the existing phase 1 pipeline  as:
+
+1. ValidateProgram()
+2. resolveProgram()
+3. executeProgram()
+4. writeTbdg()
+
+## Sending .tbdg
+
+Once the execution is completed, the server must send the generated file back to the load balancer.
+
+We added a response-sending process that streams the file in chunks. This avoids loading a potentially large .tdbg file entirely into memory.
+
+The response begins with status byte. A successful response uses status 0, followed by the .tdbg payload and its four-byte CRC-32 trailer.
+
+If processing fails, the server sends status 1 followed by an error message and it's checksum.
+
+We also added error handling in this phase for edge cases like such as open socket, invalid instruction.
+
+
+# Tuesday, 12:17 AM
+
+# Load Balancer Implementation
+
+Load balancer sits between client and server.
+
+## Queue Implementataion
+
+We used a singly linked list to implement queue and waiting client.
+
+We used singly linked list with two pointers, rear and front.
+
+When a new client is connected, enqueue() adds it to the record dequeue removes a client if load balancer has capacity to server another client.
+
+## ClientInfo
+
+This struct is used to hold the client's socket, IP address, port and arrival time.
+The ClientInfo struct holds this information.
+
+Arrival time is used because a client should not remain in the queue for more than 30 seconds. 
+
+
+# Tuesday, 1:03 AM
+
+## Creating Socket
+
+The load balancer accepts connections from clients before it can place them in a queue.
+
+We added a listening socket that binds to the confured client-facing point 5000.
+
+The socket is configured with address, we can reuse whenever needed then placed into listening mode.
+
+The backlog handles connection attempts waiting for accept(), while our own queue stores clients that have already connected and are waiting to be processed.
+
+## Starting Backend Server
+
+If the backend cannot be reached, the load balancer returns the required backend server failed to start error to the client.
+
+Once the load balancer has a connection to the server, it passes the client’s upload along in chunks. When the client finishes, the load balancer half-closes its side of the server connection, which tells the server “that’s everything.” The server then replies, and the load balancer relays the reply back to the client.
+
+In both directions, the load balancer checks the CRC-32 trailer as the data goes through. It doesn’t understand what’s inside the messages, but it won’t pass along one that fails the check.
+
+## acceptLoop()
+
+The acceptor thread’s job is simple: accept a client, record who it is, and put it in the queue. It never waits on the server, so new clients can always connect, even while another one is being served.
+
+Before adding a client, it locks the queue and checks the size. If 8 clients are already waiting, the new one gets server busy, try again later and is closed. Otherwise it joins the queue.
+
+## dispatcherLoop()
+
+The dispatcher takes the next client off the queue and then unlocks the mutex before touching the network. If it stayed locked during a slow request, the acceptor couldn’t add anyone until that request finished.
+
+If the client has been waiting more than 30 seconds, the dispatcher closes its socket without a reply, since the client has already given up. Otherwise it serves the client completely before moving on to the next. The server therefore handles one request at a time, while the load balancer keeps accepting connections.
+
+## main() and shutdown
+
+main() reads the server’s IP and port from the command line, starts networking, creates the listening socket, launches the acceptor thread, and runs the dispatcher in the main thread.
+
+Pressing Ctrl+C sets a flag that both loops watch. They stop, the queued clients’ sockets are closed, and the listening socket is released. Cleaning up matters because leftover open sockets or half-served clients can make the next run misbehave.
+
+# Tuesday, 10 November 2:43 AM
+
+# Setup Changes; moved to Helper.h
+
+Client setup changes. The shared constants and structs Variable, Frame, Snapshot etc now live in helper.h, so the client’s copies were removed to avoid redefinition errors. The default load balancer host was 127.0.0.0 (a network address) and is now 127.0.0.1.
+A temp file name was added so a download never overwrites the file the current session is reading.
+
+# Tuesday, 10 November 3:10 AM
+
+# RecV(), RecvAll(), sendAll() Implementataion
+
+recvAll() keeps calling recv() until exactly n bytes have arrived, because TCP may deliver fewer bytes than requested. It returns false if the connection closes or fails first. sendAll() does the same for sending and uses MSG_NOSIGNAL, so a closed peer returns an error instead of killing the program with SIGPIPE. It calls sendAllBytes() from helper.h. connectToHost() opens a TCP connection through connectHostSocket() and sets a 40-second send/receive timeout, which is longer than the load balancer’s 30-second queue limit, so the client never hangs forever. It returns -1 on failure. requestDebugFile() is one full request: connect, upload the source (which half-closes the socket), then read the checked reply. A failure at any stage becomes an error text for the user.
+
+# Tuesday, 10 November 5:00 PM
+
+## File readers.
+ The server writes snapshots field by field, not as raw structs, so the client reads them the same way. A string is a 4-byte length followed by its characters, and readString() rejects a length that would run past the snapshot area. readFrame() rebuilds one frame and checks argc and localCount against the 16-variable limit.
+
+## openTdbg()
+ opens the file, reads the 20-byte header field by field (the struct in memory is padded to 24 bytes, so it can’t be read in one go), and checks the magic TTDB, the version, and a positive step count. It also checks that the index sits exactly at the end of the file with stepCount entries, then loads the index and verifies the offsets are increasing and inside the snapshot area. Any failure closes the file and returns false, which becomes “server sent a damaged .tdbg file”.
+
+## closeTdbg() 
+closes the file and frees the index vector. readSnapshotAt() looks up index[step], seeks straight there without reading earlier steps, and rebuilds the snapshot on the heap. It returns nullptr if the step is out of range or the data is damaged. The caller deletes the snapshot.
+
+
+# Tuesday, 10 November 6:00 PM
+
+
+## initSession()
+initSession() puts the session in its starting state: no active file, an empty reader, step 0. closeSession() closes the .tdbg only if a session is active and then marks it inactive. It runs when the user types quit or when the input ends.
+
+
+## showCurrent()
+showCurrent() reads the snapshot at the current step through the index, prints it as step currentStep + 1, and frees it. If the read fails it prints “damaged .tdbg file”.
+
+
+## moveBy()
+moveBy() is the one function behind next, prv and both jmp commands. It refuses to run without a session, and refuses to move before step 1 or past the last step, printing where you are and keeping the position unchanged. Otherwise it moves and shows the new step. If the snapshot turns out damaged it goes back to the previous step. cmdNext, cmdPrv, cmdJmpNext and cmdJmpPrv just call it with +1, −1, +n and −n. None of them touch the network; they only read the saved file.
+
+## cmdStart()
+cmdStart() sends the source through requestDebugFile() into a temp file. If that fails, it prints the error and keeps the old session. It then opens the file into a new local reader, and a bad file prints “server sent a damaged .tdbg file” and also keeps the old session. Only after both succeed does it rename the download to ttdb_last.tdbg, close the old reader, put the new one in the session, and show step 1. Downloading to a temp name matters because saving straight to ttdb_last.tdbg would overwrite the file the old session is still reading.
+
+
+# Tuesday, 10 November , 8:10 PM
+
+## printSnapshot()
+
+printSnapshot() prints the step number out of the total, then every frame on the call stack with its arguments and locals. The server stores the stack top-first, so index 0 is the running function and main is last. The final step has an empty stack, which is printed as “the program has finished”. printHelp() lists the commands.
+
+
+## parseJumpCount()
+
+parseJumpCount() accepts only digits, rejects empty text, and requires a value from 1 to 1,000,000,000, so jmp next 0, jmp next -3 and jmp next abc are all refused.
+
+
+## runCommand()
+
+
+runCommand() splits the line into words by hand (no extra libraries), ignores blank lines, and drops a leading ttdb. It then matches start <file>, next, prv, jmp next|prv <n>, help, and quit/exit, each with the exact number of words. Anything else prints “unknown command” and the help text. It returns false on a failed command but never ends the loop.
+
+main() reads ./client <lb_ip> <lb_port> (or uses 127.0.0.1:5000 with no arguments), prints a welcome and the help, then loops: prompt, read a line, run it. Only quit/exit or the end of input leaves the loop, and then the session is closed.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
