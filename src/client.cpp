@@ -52,17 +52,46 @@ bool recvAll(int sock, char *buf, size_t n)
 {
     // recv() can return fewer bytes than asked for, so keep calling it until exactly n bytes are read.
     // Return false if the connection closes or fails before n bytes arrive.
+    size_t got = 0;
+
+    while (got < n)
+    {
+        int r = receiveSome(sock, buf + got, n - got);
+
+        if (r < 0)
+        {
+            if (socketInterrupted())
+                continue;
+
+            return false;
+        }
+
+        if (r == 0)
+            return false; // closed before n bytes arrived
+
+        got += static_cast<size_t>(r);
+    }
+
+    return true;
 }
 bool sendAll(int sock, const char *buf, size_t n)
 {
     // send() can send fewer bytes than asked for, so keep calling it until all n bytes are sent.
     // Use the flag MSG_NOSIGNAL. Return false if the connection fails.
+    return sendAllBytes(sock, buf, n); // helper.h: loops until done and uses MSG_NOSIGNAL
 }
-
 int connectToHost(const char *host, int port)
 {
     // Create a TCP socket and connect it to host:port.
     // Return the socket, or -1 if the connection fails.
+    int sock = connectHostSocket(host, port);
+
+    if (sock < 0)
+        return -1;
+
+    setSocketTimeouts(sock, CLIENT_TIMEOUT_SEC); // never wait forever for the load balancer
+
+    return sock;
 }
 bool uploadSource(int sock, const char *sourcePath)
 {
@@ -300,6 +329,37 @@ bool receiveResponse(
     }
 
     return true;
+}
+
+// NEW function: one whole request to the load balancer.
+bool requestDebugFile(const char *host, int port, const char *sourcePath,
+                      const char *outTdbgPath, string &outError)
+{
+    outError.clear();
+
+    int sock = connectToHost(host, port);
+
+    if (sock < 0)
+    {
+        outError = string("could not connect to the load balancer at ") + host + ":" + to_string(port);
+
+        return false;
+    }
+
+    if (!uploadSource(sock, sourcePath))
+    {
+        closeSocket(sock);
+
+        outError = "could not send the source file (check the path, the 15 MiB limit and the connection)";
+
+        return false;
+    }
+
+    bool ok = receiveResponse(sock, outTdbgPath, outError);
+
+    closeSocket(sock);
+
+    return ok;
 }
 
 // =============================================================================================

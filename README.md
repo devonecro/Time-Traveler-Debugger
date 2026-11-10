@@ -266,9 +266,16 @@ Pressing Ctrl+C sets a flag that both loops watch. They stop, the queued clients
 
 # Setup Changes; moved to Helper.h
 
-
 Client setup changes. The shared constants and structs Variable, Frame, Snapshot etc now live in helper.h, so the client’s copies were removed to avoid redefinition errors. The default load balancer host was 127.0.0.0 (a network address) and is now 127.0.0.1.
 A temp file name was added so a download never overwrites the file the current session is reading.
+
+# Tuesday, 10 November 3:10 AM
+
+# RecV(), RecvAll(), sendAll() Implementataion
+
+recvAll() keeps calling recv() until exactly n bytes have arrived, because TCP may deliver fewer bytes than requested. It returns false if the connection closes or fails first. sendAll() does the same for sending and uses MSG_NOSIGNAL, so a closed peer returns an error instead of killing the program with SIGPIPE. It calls sendAllBytes() from helper.h. connectToHost() opens a TCP connection through connectHostSocket() and sets a 40-second send/receive timeout, which is longer than the load balancer’s 30-second queue limit, so the client never hangs forever. It returns -1 on failure. requestDebugFile() is one full request: connect, upload the source (which half-closes the socket), then read the checked reply. A failure at any stage becomes an error text for the user.
+
+
 
 
 
