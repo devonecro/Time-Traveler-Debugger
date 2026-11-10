@@ -275,6 +275,19 @@ A temp file name was added so a download never overwrites the file the current s
 
 recvAll() keeps calling recv() until exactly n bytes have arrived, because TCP may deliver fewer bytes than requested. It returns false if the connection closes or fails first. sendAll() does the same for sending and uses MSG_NOSIGNAL, so a closed peer returns an error instead of killing the program with SIGPIPE. It calls sendAllBytes() from helper.h. connectToHost() opens a TCP connection through connectHostSocket() and sets a 40-second send/receive timeout, which is longer than the load balancer’s 30-second queue limit, so the client never hangs forever. It returns -1 on failure. requestDebugFile() is one full request: connect, upload the source (which half-closes the socket), then read the checked reply. A failure at any stage becomes an error text for the user.
 
+# Tuesday, 10 November 5:00 PM
+
+## File readers.
+ The server writes snapshots field by field, not as raw structs, so the client reads them the same way. A string is a 4-byte length followed by its characters, and readString() rejects a length that would run past the snapshot area. readFrame() rebuilds one frame and checks argc and localCount against the 16-variable limit.
+
+## openTdbg()
+ opens the file, reads the 20-byte header field by field (the struct in memory is padded to 24 bytes, so it can’t be read in one go), and checks the magic TTDB, the version, and a positive step count. It also checks that the index sits exactly at the end of the file with stepCount entries, then loads the index and verifies the offsets are increasing and inside the snapshot area. Any failure closes the file and returns false, which becomes “server sent a damaged .tdbg file”.
+
+## closeTdbg() 
+closes the file and frees the index vector. readSnapshotAt() looks up index[step], seeks straight there without reading earlier steps, and rebuilds the snapshot on the heap. It returns nullptr if the step is out of range or the data is damaged. The caller deletes the snapshot.
+
+
+
 
 
 

@@ -369,15 +369,172 @@ bool requestDebugFile(const char *host, int port, const char *sourcePath,
 // The index lets us jump straight to any step without reading the steps before it.
 // =============================================================================================
 
+
+// ---- small readers used by Part B (put them just above openTdbg) ----
+static const int64_t TDBG_HEADER_SIZE = 4 + 4 + 4 + 8; // fields are written one by one, so no padding
+
+static bool readExact(FILE *f, void *buf, size_t n)
+{
+    return n == 0 || fread(buf, 1, n, f) == n;
+}
+static bool readInt32(FILE *f, int32_t &v)
+{
+    return readExact(f, &v, sizeof(v));
+}
+static bool readInt64(FILE *f, int64_t &v)
+{
+    return readExact(f, &v, sizeof(v));
+}
+// A string is [int32 length][characters]. limitEnd stops a bad length from reading past the snapshots.
+static bool readString(FILE *f, string &out, int64_t limitEnd)
+{
+    int32_t length;
+
+    if (!readInt32(f, length) || length < 0 || length > MAX_TDBG_STRING)
+        return false;
+
+    int64_t position = fileTell64(f);
+
+    if (position < 0 || position + length > limitEnd)
+        return false;
+
+    out.resize(static_cast<size_t>(length));
+
+    return readExact(f, length > 0 ? &out[0] : nullptr, static_cast<size_t>(length));
+}
+static bool readVariable(FILE *f, Variable &v, int64_t limitEnd)
+{
+    return readString(f, v.name, limitEnd) && readInt32(f, v.value);
+}
+static bool readFrame(FILE *f, Frame &fr, int64_t limitEnd)
+{
+    if (!readString(f, fr.func_name, limitEnd) || !readInt32(f, fr.argc))
+        return false;
+
+    if (fr.argc < 0 || fr.argc > MAX_VARS_PER_FRAME)
+        return false;
+
+    for (int i = 0; i < fr.argc; i++)
+        if (!readVariable(f, fr.argv[i], limitEnd))
+            return false;
+
+    if (!readInt32(f, fr.returnLine) || !readInt32(f, fr.localCount))
+        return false;
+
+    if (fr.localCount < 0 || fr.localCount > MAX_VARS_PER_FRAME)
+        return false;
+
+    for (int i = 0; i < fr.localCount; i++)
+        if (!readVariable(f, fr.locals[i], limitEnd))
+            return false;
+
+    return true;
+}
+
+
 bool openTdbg(const char *path, TdbgReader &r)
 {
+    r.file = nullptr;
+    r.index.clear();
+
+    FILE *f = fopen(path, "rb");
+
+    if (f == nullptr)
+        return false;
+
+    auto fail = [&]() { fclose(f); r.index.clear(); return false; };
+
+    // file size, so we can check the layout
+    if (!fileSeek64(f, 0, SEEK_END))
+        return fail();
+
+    int64_t fileSize = fileTell64(f);
+
+    if (fileSize < TDBG_HEADER_SIZE || !fileSeek64(f, 0, SEEK_SET))
+        return fail();
+
+    // header, field by field (the struct in memory has padding, the file does not)
+    TTDBHeader h = {};
+
+    if (!readExact(f, h.magic, 4) || !readInt32(f, h.version) ||
+        !readInt32(f, h.stepCount) || !readInt64(f, h.indexOffset))
+        return fail();
+
+    if (memcmp(h.magic, "TTDB", 4) != 0 || h.version != TTDB_FORMAT_VERSION || h.stepCount <= 0)
+        return fail();
+
+    // the index must be the last thing in the file and hold exactly stepCount offsets
+    if (h.indexOffset < TDBG_HEADER_SIZE ||
+        h.indexOffset + static_cast<int64_t>(h.stepCount) * 8 != fileSize)
+        return fail();
+
+    if (!fileSeek64(f, h.indexOffset, SEEK_SET))
+        return fail();
+
+    r.index.resize(static_cast<size_t>(h.stepCount));
+
+    if (!readExact(f, r.index.data(), r.index.size() * sizeof(int64_t)))
+        return fail();
+
+    // offsets must grow and stay inside the snapshot area
+    int64_t previous = TDBG_HEADER_SIZE - 1;
+
+    for (int64_t offset : r.index)
+    {
+        if (offset <= previous || offset >= h.indexOffset)
+            return fail();
+
+        previous = offset;
+    }
+
+    r.file = f;
+    r.header = h;
+
+    return true;
 }
 void closeTdbg(TdbgReader &r)
 {
     // Free r.index and close the file.
+    if (r.file != nullptr)
+        fclose(r.file);
+
+    r.file = nullptr;
+
+    vector<int64_t>().swap(r.index); // really frees the memory
 }
 Snapshot *readSnapshotAt(TdbgReader &r, int32_t step)
 {
+    if (r.file == nullptr || step < 0 || step >= r.header.stepCount)
+        return nullptr;
+
+    // the index takes us straight to the step, nothing before it is read
+    if (!fileSeek64(r.file, r.index[static_cast<size_t>(step)], SEEK_SET))
+        return nullptr;
+
+    Snapshot *s = new Snapshot;
+
+    s->stackDepth = 0;
+
+    int32_t depth;
+
+    bool ok = readInt32(r.file, depth) && depth >= 0 && depth <= MAX_STACK_DEPTH;
+
+    if (ok)
+    {
+        s->stackDepth = depth;
+
+        for (int i = 0; i < depth && ok; i++)
+            ok = readFrame(r.file, s->callStack[i], r.header.indexOffset);
+    }
+
+    if (!ok)
+    {
+        delete s;
+
+        return nullptr;
+    }
+
+    return s; // the caller deletes it
 }
 
 // =============================================================================================
