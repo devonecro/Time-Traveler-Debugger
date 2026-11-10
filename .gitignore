@@ -4,6 +4,8 @@ server
 session.tdbg
 test_tdbg.py
 a.out
+client
+
 
 
 ## Windows specific dependencies

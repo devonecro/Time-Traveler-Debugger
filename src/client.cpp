@@ -44,6 +44,12 @@ struct TdbgReader
     vector<int64_t> index;    // index[i] = byte offset of snapshot i
 };
 
+struct DebugSession
+{
+    int active_flag;     // false until a "start" has worked
+    TdbgReader reader;   // the .tdbg file stays open for the whole session
+    int64_t currentStep;
+};
 // =============================================================================================
 // PART A: TALKING TO THE LOAD BALANCER
 // =============================================================================================
@@ -542,6 +548,7 @@ Snapshot *readSnapshotAt(TdbgReader &r, int32_t step)
 // There is one DebugSession variable, created in main() and passed to every command by reference.
 // =============================================================================================
 
+
 void initSession(DebugSession &s)
 {
     s.active_flag = 0;
@@ -568,24 +575,103 @@ bool showCurrent(DebugSession &s)
 {
     // Read the snapshot at s.currentStep, call printSnapshot, delete the snapshot.
     // If readSnapshotAt returns nullptr, print "damaged .tdbg file" and return false.
+    Snapshot *snapshot = readSnapshotAt(s.reader, static_cast<int32_t>(s.currentStep));
+
+    if (snapshot == nullptr)
+    {
+        cout << "damaged .tdbg file\n";
+
+        return false;
+    }
+
+    printSnapshot(static_cast<int32_t>(s.currentStep) + 1, s.reader.header.stepCount, *snapshot);
+
+    delete snapshot;
+
+    return true;
 }
 bool moveBy(DebugSession &s, int32_t delta)
 {
+    if (!s.active_flag)
+    {
+        cout << "no session yet. Use: start <source file>\n";
+
+        return false;
+    }
+
+    int64_t total = s.reader.header.stepCount;
+    int64_t target = s.currentStep + delta;
+
+    if (target < 0)
+    {
+        cout << "cannot go back that far: you are at step " << s.currentStep + 1 << " (first step is 1)\n";
+
+        return false;
+    }
+
+    if (target >= total)
+    {
+        cout << "cannot go forward that far: you are at step " << s.currentStep + 1
+             << " of " << total << "\n";
+
+        return false;
+    }
+
+    int64_t previous = s.currentStep;
+
+    s.currentStep = target;
+
+    if (!showCurrent(s))
+    {
+        s.currentStep = previous; // stay where we were if the file turned out damaged
+
+        return false;
+    }
+
+    return true;
 }
 bool cmdStart(DebugSession &s, const string &sourcePath)
 {
-    // 1. requestDebugFile with host and port, saving to TDBG_FILE.
-    // 2. If it fails, print the error text and return false. Keep the old session as it was.
-    // 3. Open the new file with openTdbg into a NEW local TdbgReader.
-    //    If that fails, print "server sent a damaged .tdbg file", keep the old session, return false.
-    // 4. Only now close the old reader (if s.active), then put the new reader into s,
-    //    set s.currentStep = 0 and s.active = true.
-    // 5. Show step 1 with showCurrent(s).
+    string error;
+
+    // 1-2. Download into a temporary name. If it fails, print the error and keep the old session.
+    if (!requestDebugFile(LB_HOST.c_str(), LB_PORT, sourcePath.c_str(), TDBG_TEMP_FILE, error))
+    {
+        cout << error << "\n";
+
+        return false;
+    }
+
+    // 3. Open the new file into a NEW local reader.
+    TdbgReader fresh;
+
+    if (!openTdbg(TDBG_TEMP_FILE, fresh))
+    {
+        remove(TDBG_TEMP_FILE);
+
+        cout << "server sent a damaged .tdbg file\n";
+
+        return false;
+    }
+
+    // Give the download its permanent name. The open FILE* follows the file, not the name.
+    rename(TDBG_TEMP_FILE, TDBG_FILE);
+
+    // 4. Only now close the old reader and put the new one into the session.
+    if (s.active_flag)
+        closeTdbg(s.reader);
+
+    s.reader = fresh;
+    s.currentStep = 0;
+    s.active_flag = 1;
+
+    // 5. Show step 1.
+    return showCurrent(s);
 }
-bool cmdNext(DebugSession &s) {}
-bool cmdPrv(DebugSession &s) {}
-bool cmdJmpNext(DebugSession &s, int32_t n) {}
-bool cmdJmpPrv(DebugSession &s, int32_t n) { }
+bool cmdNext(DebugSession &s) { return moveBy(s, 1); }
+bool cmdPrv(DebugSession &s) { return moveBy(s, -1); }
+bool cmdJmpNext(DebugSession &s, int32_t n) { return moveBy(s, n); }
+bool cmdJmpPrv(DebugSession &s, int32_t n) { return moveBy(s, -n); }
 
 // =============================================================================================
 // PART E: PRINTING
@@ -593,40 +679,191 @@ bool cmdJmpPrv(DebugSession &s, int32_t n) { }
 
 void printSnapshot(int32_t step, int32_t totalSteps, const Snapshot &s)
 {
+    cout << "\n=== Step " << step << " of " << totalSteps << " ===\n";
+
+    if (s.stackDepth == 0)
+    {
+        cout << "  (call stack is empty: the program has finished)\n";
+
+        return;
+    }
+
+    // callStack[0] is the TOP frame (the function running now), main is the last one.
+    for (int i = 0; i < s.stackDepth; i++)
+    {
+        const Frame &f = s.callStack[i];
+
+        cout << "  [" << i << "] " << f.func_name << (i == 0 ? "   <- running" : "") << "\n";
+
+        for (int j = 0; j < f.argc; j++)
+            cout << "        arg   " << f.argv[j].name << " = " << f.argv[j].value << "\n";
+
+        for (int j = 0; j < f.localCount; j++)
+            cout << "        local " << f.locals[j].name << " = " << f.locals[j].value << "\n";
+    }
 }
 void printHelp()
 {
     // Print the commands
+    cout << "Commands:\n"
+         << "  start <source file>   send the source to the server and show step 1\n"
+         << "  next                  go one step forward\n"
+         << "  prv                   go one step back\n"
+         << "  jmp next <n>          go n steps forward\n"
+         << "  jmp prv <n>           go n steps back\n"
+         << "  help                  show this text\n"
+         << "  quit | exit           leave\n"
+         << "(a leading \"" << PROGRAM_NAME << "\" is allowed, e.g. \"" << PROGRAM_NAME << " next\")\n";
 }
 
 // =============================================================================================
 // PART F: THE INFINITE LOOP
 // =============================================================================================
 
+
+// ---- helper for jmp (put it just above runCommand) ----
+static bool parseJumpCount(const string &text, int32_t &out)
+{
+    if (text.empty() || text.size() > 10)
+        return false;
+
+    for (char c : text)
+        if (c < '0' || c > '9')
+            return false;
+
+    long long value = stoll(text);
+
+    if (value < 1 || value > MAX_JUMP)
+        return false;
+
+    out = static_cast<int32_t>(value);
+
+    return true;
+}
 bool runCommand(DebugSession &s, const string &line, bool &quitRequested)
 {
     // 1. Split the line into words.
+    vector<string> words;
+    string word;
+
+    for (size_t i = 0; i <= line.size(); i++)
+    {
+        char c = (i < line.size()) ? line[i] : ' ';
+
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n')
+        {
+            if (!word.empty())
+                words.push_back(word);
+
+            word.clear();
+        }
+        else
+        {
+            word += c;
+        }
+    }
+
+    if (words.empty())
+        return true; // blank line: nothing to do
+
     // 2. If the first word is "ttdb", drop it.
-    // 3. Match the first word:
-    //      start      -> needs a path after it, then cmdStart
-    //      next       -> no more words, then cmdNext
-    //      prv        -> no more words, then cmdPrv
-    //      jmp        -> second word "next" or "prv", third word a positive number ,
-    //                    then cmdJmpNext or cmdJmpPrv
-    //      help       -> printHelp
-    //      quit, exit -> set quitRequested = true
-    // 4. For anything else, or a wrong number of words, print "unknown command" and the help text, and return false.
+    if (words[0] == PROGRAM_NAME)
+    {
+        words.erase(words.begin());
+
+        if (words.empty())
+        {
+            printHelp();
+
+            return true;
+        }
+    }
+
+    // 3. Match the first word.
+    const string &cmd = words[0];
+
+    if (cmd == "start" && words.size() == 2)
+        return cmdStart(s, words[1]);
+
+    if (cmd == "next" && words.size() == 1)
+        return cmdNext(s);
+
+    if (cmd == "prv" && words.size() == 1)
+        return cmdPrv(s);
+
+    if (cmd == "jmp" && words.size() == 3 && (words[1] == "next" || words[1] == "prv"))
+    {
+        int32_t n;
+
+        if (parseJumpCount(words[2], n))
+            return words[1] == "next" ? cmdJmpNext(s, n) : cmdJmpPrv(s, n);
+    }
+    else if (cmd == "help" && words.size() == 1)
+    {
+        printHelp();
+
+        return true;
+    }
+    else if ((cmd == "quit" || cmd == "exit") && words.size() == 1)
+    {
+        quitRequested = true;
+
+        return true;
+    }
+
+    // 4. Anything else, or a wrong number of words.
+    cout << "unknown command\n";
+
+    printHelp();
+
+    return false;
 }
+
+
 int main(int argc, char *argv[])
 {
-    // you get string LB_HOST and int LB_PORT = 0 in arguments of this main function. 
+    // ./client <lb_ip> <lb_port>   (with no arguments it uses 127.0.0.1:5000)
+    if (argc != 1 && argc != 3)
+    {
+        cerr << "Usage: ./client <lb_ip> <lb_port>\n";
 
-    // DebugSession session; initSession(session);
-    // Print a short welcome and the help text.
-    //
-    // Infinite loop:
-    //   if quitRequested, break
-    //
-    // After the loop: closeSession(session) and return 0.
-    // Never exit the loop because of an error. Only quit or the end of the input leaves it.
+        return 1;
+    }
+
+    if (argc == 3)
+    {
+        LB_HOST = argv[1];
+
+        if (!parsePort(argv[2], LB_PORT))
+        {
+            cerr << "client: invalid port\n";
+
+            return 1;
+        }
+    }
+
+    DebugSession session;
+
+    initSession(session);
+
+    cout << "Time-Travel Debugger client (load balancer " << LB_HOST << ":" << LB_PORT << ")\n";
+
+    printHelp();
+
+    bool quitRequested = false;
+    string line;
+
+    while (!quitRequested)
+    {
+        cout << PROMPT << flush;
+
+        if (!getline(cin, line))
+            break; // end of input
+
+        runCommand(session, line, quitRequested); // an error never ends the loop
+    }
+
+    closeSession(session);
+
+    return 0;
 }
