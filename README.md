@@ -305,6 +305,25 @@ moveBy() is the one function behind next, prv and both jmp commands. It refuses 
 cmdStart() sends the source through requestDebugFile() into a temp file. If that fails, it prints the error and keeps the old session. It then opens the file into a new local reader, and a bad file prints “server sent a damaged .tdbg file” and also keeps the old session. Only after both succeed does it rename the download to ttdb_last.tdbg, close the old reader, put the new one in the session, and show step 1. Downloading to a temp name matters because saving straight to ttdb_last.tdbg would overwrite the file the old session is still reading.
 
 
+# Tuesday, 10 November , 8:10 PM
+
+## printSnapshot()
+
+printSnapshot() prints the step number out of the total, then every frame on the call stack with its arguments and locals. The server stores the stack top-first, so index 0 is the running function and main is last. The final step has an empty stack, which is printed as “the program has finished”. printHelp() lists the commands.
+
+
+## parseJumpCount()
+
+parseJumpCount() accepts only digits, rejects empty text, and requires a value from 1 to 1,000,000,000, so jmp next 0, jmp next -3 and jmp next abc are all refused.
+
+
+## runCommand()
+
+
+runCommand() splits the line into words by hand (no extra libraries), ignores blank lines, and drops a leading ttdb. It then matches start <file>, next, prv, jmp next|prv <n>, help, and quit/exit, each with the exact number of words. Anything else prints “unknown command” and the help text. It returns false on a failed command but never ends the loop.
+
+main() reads ./client <lb_ip> <lb_port> (or uses 127.0.0.1:5000 with no arguments), prints a welcome and the help, then loops: prompt, read a line, run it. Only quit/exit or the end of input leaves the loop, and then the session is closed.
+
 
 
 
